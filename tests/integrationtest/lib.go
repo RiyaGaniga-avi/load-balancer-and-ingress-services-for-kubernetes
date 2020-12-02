@@ -52,6 +52,7 @@ const (
 	MULTIPORTSVC    = "testsvcmulti"                       // multi port service name
 	NAMESPACE       = "red-ns"                             // namespace
 	AVINAMESPACE    = "admin"                              // avi namespace
+	AKOTENANT       = "akotenant"                          // ako tenant where TENANTS_PER_CLUSTER is enabled
 	SINGLEPORTMODEL = "admin/cluster--red-ns-testsvc"      // single port model name
 	MULTIPORTMODEL  = "admin/cluster--red-ns-testsvcmulti" // multi port model name
 	RANDOMUUID      = "random-uuid"                        // random avi object uuid
@@ -110,7 +111,13 @@ func AddNamespace(nsName string, labels map[string]string) error {
 		Labels: labels,
 	}).Namespace()
 	nsMetaOptions.ResourceVersion = "1"
-	_, err := KubeClient.CoreV1().Namespaces().Create(context.TODO(), nsMetaOptions, metav1.CreateOptions{})
+	_, err := KubeClient.CoreV1().Namespaces().Get(context.TODO(), nsName, metav1.GetOptions{})
+	if err != nil {
+		_, err = KubeClient.CoreV1().Namespaces().Create(context.TODO(), nsMetaOptions, metav1.CreateOptions{})
+		if err != nil {
+			utils.AviLog.Errorf("Error occured while Adding namespace : %v", err)
+		}
+	}
 	return err
 }
 
@@ -572,6 +579,16 @@ func GetStaticRoute(nodeAddr, prefixAddr, routeID string, mask int32) *models.St
 		RouteID: &routeID,
 	}
 	return &staticRoute
+}
+
+func SetAkoTenant() {
+	os.Setenv("TENANTS_PER_CLUSTER", "true")
+	os.Setenv("TENANT_NAME", AKOTENANT)
+}
+
+func ResetAkoTenant() {
+	os.Setenv("TENANTS_PER_CLUSTER", "false")
+	os.Setenv("TENANT_NAME", "admin")
 }
 
 func SetNodePortMode() {
