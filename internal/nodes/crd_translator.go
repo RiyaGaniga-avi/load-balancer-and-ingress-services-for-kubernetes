@@ -25,7 +25,6 @@ import (
 	"github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/internal/lib"
 	"github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/internal/objects"
 	"github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/internal/status"
-
 	"github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/pkg/utils"
 
 	"github.com/avinetworks/sdk/go/models"
@@ -55,57 +54,81 @@ func BuildL7HostRule(host, namespace, ingName, key string, vsNode *AviVsNode) {
 		}
 	}
 
-	if deleteCase {
-		vsNode.SSLKeyCertAviRef = ""
-		vsNode.WafPolicyRef = ""
-		vsNode.HttpPolicySetRefs = []string{}
-		vsNode.AppProfileRef = ""
-		if vsNode.ServiceMetadata.CRDStatus.Value != "" {
-			vsNode.ServiceMetadata.CRDStatus.Status = "INACTIVE"
-		}
-		return
-	}
-
 	// host specific
-	var vsWafPolicy, vsAppProfile, vsSslKeyCertificate string
-	var vsHTTPPolicySets []string
-	sslKeyCertRef := hostrule.Spec.VirtualHost.TLS.SSLKeyCertificate.Name
-	if sslKeyCertRef != "" {
-		vsSslKeyCertificate = fmt.Sprintf("/api/sslkeyandcertificate?name=%s", sslKeyCertRef)
-		vsNode.SSLKeyCertRefs = []*AviTLSKeyCertNode{}
-	}
+	var vsWafPolicy, vsAppProfile, vsSslKeyCertificate, vsErrorPageProfile, vsAnalyticsProfile, vsSslProfile string
+	var vsEnabled *bool
+	var crdStatus cache.CRDMetadata
 
-	wafPolicyRef := hostrule.Spec.VirtualHost.WAFPolicy
-	if wafPolicyRef != "" {
-		vsWafPolicy = fmt.Sprintf("/api/wafpolicy?name=%s", wafPolicyRef)
-	}
+	// Initializing the values of vsHTTPPolicySets and vsDatascripts, using a nil value would impact the value of VS checksum
+	vsHTTPPolicySets := []string{}
+	vsDatascripts := []string{}
 
-	httpPolicySetRef := hostrule.Spec.VirtualHost.HTTPPolicy.PolicySets
-	for _, policy := range httpPolicySetRef {
-		if !utils.HasElem(vsHTTPPolicySets, fmt.Sprintf("/api/httppolicyset?name=%s", policy)) {
-			vsHTTPPolicySets = append(vsHTTPPolicySets, fmt.Sprintf("/api/httppolicyset?name=%s", policy))
+	if !deleteCase {
+		if hostrule.Spec.VirtualHost.TLS.SSLKeyCertificate.Name != "" {
+			vsSslKeyCertificate = fmt.Sprintf("/api/sslkeyandcertificate?name=%s", hostrule.Spec.VirtualHost.TLS.SSLKeyCertificate.Name)
+			vsNode.SSLKeyCertRefs = []*AviTLSKeyCertNode{}
 		}
-	}
 
-	// delete all auto-created HttpPolicySets by AKO if override is set
-	if hostrule.Spec.VirtualHost.HTTPPolicy.Overwrite {
-		vsNode.HttpPolicyRefs = []*AviHttpPolicySetNode{}
-	}
+		if hostrule.Spec.VirtualHost.TLS.SSLProfile != "" {
+			vsSslProfile = fmt.Sprintf("/api/sslprofile?name=%s", hostrule.Spec.VirtualHost.TLS.SSLProfile)
+		}
 
-	appProfileRef := hostrule.Spec.VirtualHost.ApplicationProfile
-	if appProfileRef != "" {
-		vsAppProfile = fmt.Sprintf("/api/applicationprofile?name=%s", appProfileRef)
+		if hostrule.Spec.VirtualHost.WAFPolicy != "" {
+			vsWafPolicy = fmt.Sprintf("/api/wafpolicy?name=%s", hostrule.Spec.VirtualHost.WAFPolicy)
+		}
+
+		if hostrule.Spec.VirtualHost.ApplicationProfile != "" {
+			vsAppProfile = fmt.Sprintf("/api/applicationprofile?name=%s", hostrule.Spec.VirtualHost.ApplicationProfile)
+		}
+
+		if hostrule.Spec.VirtualHost.ErrorPageProfile != "" {
+			vsErrorPageProfile = fmt.Sprintf("/api/errorpageprofile?name=%s", hostrule.Spec.VirtualHost.ErrorPageProfile)
+		}
+
+		if hostrule.Spec.VirtualHost.AnalyticsProfile != "" {
+			vsAnalyticsProfile = fmt.Sprintf("/api/analyticsprofile?name=%s", hostrule.Spec.VirtualHost.AnalyticsProfile)
+		}
+
+		for _, policy := range hostrule.Spec.VirtualHost.HTTPPolicy.PolicySets {
+			if !utils.HasElem(vsHTTPPolicySets, fmt.Sprintf("/api/httppolicyset?name=%s", policy)) {
+				vsHTTPPolicySets = append(vsHTTPPolicySets, fmt.Sprintf("/api/httppolicyset?name=%s", policy))
+			}
+		}
+
+		// delete all auto-created HttpPolicySets by AKO if override is set
+		if hostrule.Spec.VirtualHost.HTTPPolicy.Overwrite {
+			vsNode.HttpPolicyRefs = []*AviHttpPolicySetNode{}
+		}
+
+		for _, script := range hostrule.Spec.VirtualHost.Datascripts {
+			if !utils.HasElem(vsDatascripts, fmt.Sprintf("/api/vsdatascriptset?name=%s", script)) {
+				vsDatascripts = append(vsDatascripts, fmt.Sprintf("/api/vsdatascriptset?name=%s", script))
+			}
+		}
+
+		vsEnabled = hostrule.Spec.VirtualHost.EnableVirtualHost
+		crdStatus = cache.CRDMetadata{
+			Type:   "HostRule",
+			Value:  hostrule.Namespace + "/" + hostrule.Name,
+			Status: "ACTIVE",
+		}
+	} else {
+		if vsNode.ServiceMetadata.CRDStatus.Value != "" {
+			crdStatus = vsNode.ServiceMetadata.CRDStatus
+			crdStatus.Status = "INACTIVE"
+		}
 	}
 
 	vsNode.SSLKeyCertAviRef = vsSslKeyCertificate
 	vsNode.WafPolicyRef = vsWafPolicy
 	vsNode.HttpPolicySetRefs = vsHTTPPolicySets
 	vsNode.AppProfileRef = vsAppProfile
-	vsNode.ServiceMetadata.CRDStatus = cache.CRDMetadata{
-		Type:   "HostRule",
-		Value:  hostrule.Namespace + "/" + hostrule.Name,
-		Status: "ACTIVE",
-	}
+	vsNode.AnalyticsProfileRef = vsAnalyticsProfile
+	vsNode.ErrorPageProfileRef = vsErrorPageProfile
+	vsNode.SSLProfileRef = vsSslProfile
+	vsNode.VsDatascriptRefs = vsDatascripts
+	vsNode.Enabled = vsEnabled
+	vsNode.ServiceMetadata.CRDStatus = crdStatus
 
 	utils.AviLog.Infof("key: %s, Attached hostrule %s on vsNode %s", key, host, vsNode.Name)
 }
@@ -114,22 +137,9 @@ func BuildL7HostRule(host, namespace, ingName, key string, vsNode *AviVsNode) {
 // when we get an ingress update and we are building the corresponding pools of that ingress
 // we need to get all httprules which match ingress's host/path
 func BuildPoolHTTPRule(host, path, ingName, namespace, key string, vsNode *AviVsNode, isSNI bool) {
-	deleteCase := false
 	found, pathRules := objects.SharedCRDLister().GetFqdnHTTPRulesMapping(host)
 	if !found {
-		utils.AviLog.Debugf("key: %s, msg: HTTPRules for fqdn %s not found", key, host)
-		deleteCase = true
-	}
-
-	if deleteCase {
-		for _, pool := range vsNode.PoolRefs {
-			pool.LbAlgorithm = ""
-			pool.LbAlgorithmHash = ""
-			pool.LbAlgoHostHeader = ""
-			if pool.ServiceMetadata.CRDStatus.Value != "" {
-				pool.ServiceMetadata.CRDStatus.Status = "INACTIVE"
-			}
-		}
+		utils.AviLog.Warnf("key: %s, msg: HTTPRules for fqdn %s not found", key, host)
 		return
 	}
 
@@ -172,6 +182,8 @@ func BuildPoolHTTPRule(host, path, ingName, namespace, key string, vsNode *AviVs
 		for _, pool := range vsNode.PoolRefs {
 			isPathSniEnabled := pool.SniEnabled
 			pathSslProfile := pool.SslProfileRef
+			destinationCertNode := pool.PkiProfile
+			pathHMs := pool.HealthMonitors
 
 			// pathprefix match
 			// lets say path: / and available pools are cluster--namespace-host_foo-ingName, cluster--namespace-host_bar-ingName
@@ -188,16 +200,33 @@ func BuildPoolHTTPRule(host, path, ingName, namespace, key string, vsNode *AviVs
 				// pool tls
 				if httpRulePath.TLS.Type != "" {
 					isPathSniEnabled = true
-					sslProfileRef := httpRulePath.TLS.SSLProfile
-					if sslProfileRef != "" {
-						pathSslProfile = fmt.Sprintf("/api/sslprofile?name=%s", sslProfileRef)
+					if httpRulePath.TLS.SSLProfile != "" {
+						pathSslProfile = fmt.Sprintf("/api/sslprofile?name=%s", httpRulePath.TLS.SSLProfile)
 					} else {
 						pathSslProfile = fmt.Sprintf("/api/sslprofile?name=%s", lib.DefaultPoolSSLProfile)
+					}
+
+					if httpRulePath.TLS.DestinationCA != "" {
+						destinationCertNode = &AviPkiProfileNode{
+							Name:   lib.GetPoolPKIProfileName(pool.Name),
+							Tenant: lib.GetTenant(),
+							CACert: httpRulePath.TLS.DestinationCA,
+						}
+					} else {
+						destinationCertNode = nil
+					}
+				}
+
+				for _, hm := range httpRulePath.HealthMonitors {
+					if !utils.HasElem(pathHMs, fmt.Sprintf("/api/healthmonitor?name=%s", hm)) {
+						pathHMs = append(pathHMs, fmt.Sprintf("/api/healthmonitor?name=%s", hm))
 					}
 				}
 
 				pool.SniEnabled = isPathSniEnabled
 				pool.SslProfileRef = pathSslProfile
+				pool.PkiProfile = destinationCertNode
+				pool.HealthMonitors = pathHMs
 
 				// from this path, generate refs to this pool node
 				pool.LbAlgorithm = httpRulePath.LoadBalancerPolicy.Algorithm
@@ -246,9 +275,17 @@ func validateHostRuleObj(key string, hostrule *akov1alpha1.HostRule) error {
 		hostrule.Spec.VirtualHost.WAFPolicy:                  "WafPolicy",
 		hostrule.Spec.VirtualHost.ApplicationProfile:         "AppProfile",
 		hostrule.Spec.VirtualHost.TLS.SSLKeyCertificate.Name: "SslKeyCert",
+		hostrule.Spec.VirtualHost.TLS.SSLProfile:             "SslProfile",
+		hostrule.Spec.VirtualHost.AnalyticsProfile:           "AnalyticsProfile",
+		hostrule.Spec.VirtualHost.ErrorPageProfile:           "ErrorPageProfile",
 	}
+
 	for _, policy := range hostrule.Spec.VirtualHost.HTTPPolicy.PolicySets {
 		refData[policy] = "HttpPolicySet"
+	}
+
+	for _, script := range hostrule.Spec.VirtualHost.Datascripts {
+		refData[script] = "VsDatascript"
 	}
 
 	for k, value := range refData {
@@ -277,6 +314,10 @@ func validateHTTPRuleObj(key string, httprule *akov1alpha1.HTTPRule) error {
 	refData := make(map[string]string)
 	for _, path := range httprule.Spec.Paths {
 		refData[path.TLS.SSLProfile] = "SslProfile"
+
+		for _, hm := range path.HealthMonitors {
+			refData[hm] = "HealthMonitor"
+		}
 	}
 
 	for k, value := range refData {
@@ -301,11 +342,15 @@ func validateHTTPRuleObj(key string, httprule *akov1alpha1.HTTPRule) error {
 }
 
 var refModelMap = map[string]string{
-	"SslKeyCert":    "sslkeyandcertificate",
-	"WafPolicy":     "wafpolicy",
-	"HttpPolicySet": "httppolicyset",
-	"SslProfile":    "sslprofile",
-	"AppProfile":    "applicationprofile",
+	"SslKeyCert":       "sslkeyandcertificate",
+	"WafPolicy":        "wafpolicy",
+	"HttpPolicySet":    "httppolicyset",
+	"SslProfile":       "sslprofile",
+	"AppProfile":       "applicationprofile",
+	"AnalyticsProfile": "analyticsprofile",
+	"ErrorPageProfile": "errorpageprofile",
+	"VsDatascript":     "vsdatascriptset",
+	"HealthMonitor":    "healthmonitor",
 }
 
 // checkRefOnController checks whether a provided ref on the controller

@@ -178,11 +178,8 @@ func GetCACertNodeName(keycertname string) string {
 	return keycertname + "-cacert"
 }
 
-func GetPoolTLSKeyCertNodeName(httprule, pathPrefix string) string {
-	if pathPrefix == "/" {
-		pathPrefix = ""
-	}
-	return NamePrefix + strings.ReplaceAll(httprule, "/", "-") + strings.ReplaceAll(pathPrefix, "/", "_")
+func GetPoolPKIProfileName(poolName string) string {
+	return poolName + "-pkiprofile"
 }
 
 var VRFContext string
@@ -299,6 +296,17 @@ func GetSubnetPrefix() string {
 		return subnetPrefix
 	}
 	return ""
+}
+
+func GetSubnetPrefixInt() int32 {
+	// check if subnetPrefix value is a valid integer value
+	defaultCidr := int32(24)
+	intCidr, err := strconv.ParseInt(GetSubnetPrefix(), 10, 32)
+	if err != nil {
+		utils.AviLog.Warnf("The value of subnetPrefix couldn't be converted to int32, defaulting to /24, %v", err)
+		return defaultCidr
+	}
+	return int32(intCidr)
 }
 
 func GetNetworkName() string {

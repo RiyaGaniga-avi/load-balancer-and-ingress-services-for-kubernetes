@@ -4,7 +4,7 @@ GOCLEAN=$(GOCMD) clean
 GOGET=$(GOCMD) get
 GOTEST=$(GOCMD) test
 BINARY_NAME_AKO=ako
-AKO_VERSION=v1.3.2
+AKO_VERSION=v1.3.1
 PACKAGE_PATH_AKO=github.com/vmware/load-balancer-and-ingress-services-for-kubernetes
 REL_PATH_AKO=$(PACKAGE_PATH_AKO)/cmd/ako-main
 AKO_OPERATOR_IMAGE=ako-operator
@@ -45,13 +45,17 @@ else
 endif
 
 
-.PHONY:all
+.PHONY: all
 all: build docker
 
 .PHONY: build
 build: glob-vars
 		sudo docker run -w=/go/src/$(PACKAGE_PATH_AKO) -v $(PWD):/go/src/$(PACKAGE_PATH_AKO) $(BUILD_GO_IMG) \
 		$(GOBUILD) -o /go/src/$(PACKAGE_PATH_AKO)/bin/$(BINARY_NAME_AKO) -ldflags="-X 'main.version=$(AKO_VERSION)'" -mod=vendor /go/src/$(REL_PATH_AKO)
+
+.PHONY: build-local
+build-local:
+		$(GOBUILD) -o bin/$(BINARY_NAME_AKO) -ldflags="-X 'main.version=$(AKO_VERSION)'" -mod=vendor ./cmd/ako-main
 
 .PHONY: clean
 clean:
@@ -117,4 +121,4 @@ int_test:
 .PHONY: scale_test
 scale_test:
 	sudo docker run -w=/go/src/$(PACKAGE_PATH_AKO) -v $(PWD):/go/src/$(PACKAGE_PATH_AKO) $(BUILD_GO_IMG) \
-	$(GOTEST) -v -mod=vendor ./tests/scaletest -failfast -timeout $(Timeout) $(NumGoRoutines) $(TestbedFilePath)
+	$(GOTEST) -v -mod=vendor ./tests/scaletest -failfast $(Timeout) $(TestbedFilePath) $(NumGoRoutines) $(NumOfIng) 

@@ -29,7 +29,7 @@ import (
 
 	akov1alpha1 "github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/internal/apis/ako/v1alpha1"
 	"github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/internal/cache"
-	crdfake "github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/internal/client/clientset/versioned/fake"
+	crdfake "github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/internal/client/v1alpha1/clientset/versioned/fake"
 	"github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/internal/k8s"
 	"github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/internal/lib"
 	avinodes "github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/internal/nodes"
@@ -1008,12 +1008,18 @@ type FakeHostRule struct {
 	Namespace          string
 	Fqdn               string
 	SslKeyCertificate  string
+	SslProfile         string
 	WafPolicy          string
 	ApplicationProfile string
+	EnableVirtualHost  bool
+	AnalyticsProfile   string
+	ErrorPageProfile   string
+	Datascripts        []string
 	HttpPolicySets     []string
 }
 
 func (hr FakeHostRule) HostRule() *akov1alpha1.HostRule {
+	enable := true
 	hostrule := &akov1alpha1.HostRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: hr.Namespace,
@@ -1027,6 +1033,7 @@ func (hr FakeHostRule) HostRule() *akov1alpha1.HostRule {
 						Name: hr.SslKeyCertificate,
 						Type: "ref",
 					},
+					SSLProfile:  hr.SslProfile,
 					Termination: "edge",
 				},
 				HTTPPolicy: akov1alpha1.HostRuleHTTPPolicy{
@@ -1035,6 +1042,10 @@ func (hr FakeHostRule) HostRule() *akov1alpha1.HostRule {
 				},
 				WAFPolicy:          hr.WafPolicy,
 				ApplicationProfile: hr.ApplicationProfile,
+				AnalyticsProfile:   hr.AnalyticsProfile,
+				ErrorPageProfile:   hr.ErrorPageProfile,
+				Datascripts:        hr.Datascripts,
+				EnableVirtualHost:  &enable,
 			},
 		},
 	}
@@ -1049,10 +1060,14 @@ func SetupHostRule(t *testing.T, hrname, fqdn string, secure bool) {
 		Fqdn:               fqdn,
 		WafPolicy:          "thisisahostruleref-waf",
 		ApplicationProfile: "thisisahostruleref-appprof",
-		HttpPolicySets:     []string{"thisisahostruleref-httpps-1"},
+		AnalyticsProfile:   "thisisahostruleref-analyticsprof",
+		ErrorPageProfile:   "thisisahostruleref-errorprof",
+		Datascripts:        []string{"thisisahostruleref-ds2", "thisisahostruleref-ds1"},
+		HttpPolicySets:     []string{"thisisahostruleref-httpps2", "thisisahostruleref-httpps1"},
 	}
 	if secure {
 		hostrule.SslKeyCertificate = "thisisahostruleref-sslkey"
+		hostrule.SslProfile = "thisisahostruleref-sslprof"
 	}
 
 	hrCreate := hostrule.HostRule()
@@ -1076,20 +1091,24 @@ type FakeHTTPRule struct {
 }
 
 type FakeHTTPRulePath struct {
-	Path        string
-	SslProfile  string
-	LbAlgorithm string
-	Hash        string
+	Path           string
+	SslProfile     string
+	DestinationCA  string
+	HealthMonitors []string
+	LbAlgorithm    string
+	Hash           string
 }
 
 func (rr FakeHTTPRule) HTTPRule() *akov1alpha1.HTTPRule {
 	var rrPaths []akov1alpha1.HTTPRulePaths
 	for _, p := range rr.PathProperties {
 		rrPaths = append(rrPaths, akov1alpha1.HTTPRulePaths{
-			Target: p.Path,
+			Target:         p.Path,
+			HealthMonitors: p.HealthMonitors,
 			TLS: akov1alpha1.HTTPRuleTLS{
-				Type:       "reencrypt",
-				SSLProfile: p.SslProfile,
+				Type:          "reencrypt",
+				SSLProfile:    p.SslProfile,
+				DestinationCA: p.DestinationCA,
 			},
 			LoadBalancerPolicy: akov1alpha1.HTTPRuleLBPolicy{
 				Algorithm: p.LbAlgorithm,
@@ -1115,10 +1134,12 @@ func SetupHTTPRule(t *testing.T, rrname, fqdn, path string) {
 		Namespace: "default",
 		Fqdn:      fqdn,
 		PathProperties: []FakeHTTPRulePath{{
-			Path:        path,
-			SslProfile:  "thisisahttpruleref-sslprofile",
-			LbAlgorithm: "LB_ALGORITHM_CONSISTENT_HASH",
-			Hash:        "LB_ALGORITHM_CONSISTENT_HASH_SOURCE_IP_ADDRESS",
+			Path:           path,
+			SslProfile:     "thisisahttpruleref-sslprofile",
+			DestinationCA:  "httprule-destinationCA",
+			LbAlgorithm:    "LB_ALGORITHM_CONSISTENT_HASH",
+			Hash:           "LB_ALGORITHM_CONSISTENT_HASH_SOURCE_IP_ADDRESS",
+			HealthMonitors: []string{"thisisahttpruleref-hm2", "thisisahttpruleref-hm1"},
 		}},
 	}
 
@@ -1143,12 +1164,30 @@ func VerifyMetadataHostRule(g *gomega.WithT, vsKey cache.NamespaceName, hrnsname
 	g.Eventually(func() bool {
 		sniCache, found := mcache.VsCacheMeta.AviCacheGet(vsKey)
 		sniCacheObj, ok := sniCache.(*cache.AviVsCache)
-		if (ok && found &&
-			sniCacheObj.ServiceMetadataObj.CRDStatus.Value == hrnsname &&
-			sniCacheObj.ServiceMetadataObj.CRDStatus.Status == status) ||
+		if (ok && found && sniCacheObj.ServiceMetadataObj.CRDStatus.Value == hrnsname && sniCacheObj.ServiceMetadataObj.CRDStatus.Status == status) ||
+			(ok && found && !active && sniCacheObj.ServiceMetadataObj.CRDStatus.Status == "") ||
 			(!active && !found) {
 			return true
 		}
 		return false
-	}, 20*time.Second).Should(gomega.Equal(true))
+	}, 50*time.Second).Should(gomega.Equal(true))
+}
+
+func VerifyMetadataHTTPRule(g *gomega.WithT, poolKey cache.NamespaceName, rrnsname string, active bool) {
+	mcache := cache.SharedAviObjCache()
+	status := "INACTIVE"
+	if active {
+		status = "ACTIVE"
+	}
+
+	g.Eventually(func() bool {
+		poolCache, found := mcache.PoolCache.AviCacheGet(poolKey)
+		poolCacheObj, ok := poolCache.(*cache.AviPoolCache)
+		if (ok && found && poolCacheObj.ServiceMetadataObj.CRDStatus.Value == rrnsname && poolCacheObj.ServiceMetadataObj.CRDStatus.Status == status) ||
+			(ok && found && !active && poolCacheObj.ServiceMetadataObj.CRDStatus.Status == "") ||
+			(!active && !found) {
+			return true
+		}
+		return false
+	}, 50*time.Second).Should(gomega.Equal(true))
 }

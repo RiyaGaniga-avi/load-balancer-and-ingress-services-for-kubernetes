@@ -12,7 +12,7 @@ image:
 AKOSettings:
   logLevel: "WARN" #enum: INFO|DEBUG|WARN|ERROR
   fullSyncFrequency: "1800" # This frequency controls how often AKO polls the Avi controller to update itself with cloud configurations.
-  apiServerPort: 8080 # Specify the port for the API server, default is set as 8080 // EmptyAllowed: false
+  apiServerPort: 8080 # Internal port for AKO's API server for the liveness probe of the AKO pod default=8080
   deleteConfig: "false" # Has to be set to true in configmap if user wants to delete AKO created objects from AVI 
   disableStaticRouteSync: "false" # If the POD networks are reachable from the Avi SE, set this knob to true.
   clusterName: "my-cluster" # A unique identifier for the kubernetes cluster, that helps distinguish the objects for this cluster in the avi controller. // MUST-EDIT
@@ -56,7 +56,7 @@ ControllerSettings:
   serviceEngineGroupName: "Default-Group" # Name of the ServiceEngine Group.
   controllerVersion: "18.2.10" # The controller API version
   cloudName: "Default-Cloud" # The configured cloud name on the Avi controller.
-  controllerIP: ""
+  controllerHost: "" # IP address or Hostname of Avi Controller
   tenantsPerCluster: "false" # If set to true, AKO will map each kubernetes cluster uniquely to a tenant in Avi
   tenantName: "admin" # Name of the tenant where all the AKO objects will be created in AVI. // Required only if tenantsPerCluster is set to True
 

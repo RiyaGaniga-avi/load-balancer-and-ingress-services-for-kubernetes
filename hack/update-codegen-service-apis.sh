@@ -14,42 +14,60 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -o errexit  # Exits immediately on unexpected errors (does not bypass traps)
-set -o nounset  # Errors if variables are used without first being defined
-set -o pipefail # Non-zero exit codes in piped commands causes pipeline to fail
-                # with that code
+set -o errexit
+set -o nounset
+set -o pipefail
 
-go install k8s.io/code-generator/cmd/{client-gen,lister-gen,informer-gen,deepcopy-gen,register-gen}
+# configurable envs
+readonly AKO_PACKAGE=github.com/vmware/load-balancer-and-ingress-services-for-kubernetes
 
-# Go installs the above commands to get installed in $GOBIN if defined, and $GOPATH/bin otherwise:
-GOBIN="$(go env GOBIN)"
-gobin="${GOBIN:-$(go env GOPATH)/bin}"
+###
 
-OUTPUT_PKG=github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/third_party/service-apis/client
-FQ_APIS=github.com/vmware-tanzu/service-apis/apis/v1alpha1pre1
-CLIENTSET_NAME=versioned
-CLIENTSET_PKG_NAME=clientset
-BOILERPLATE_FILE="${GOPATH}/src/github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/hack/boilerplate.go.txt"
+readonly SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE}")"/.. && pwd)"
+
+readonly GO111MODULE="on"
+readonly GOFLAGS="-mod=readonly"
+readonly GOPATH="$(mktemp -d)"
+
+export GO111MODULE GOFLAGS GOPATH
+
+# Even when modules are enabled, the code-generator tools always write to
+# a traditional GOPATH directory, so fake on up to point to the current
+# workspace.
+mkdir -p "$GOPATH/src/github.com/vmware"
+ln -s "${SCRIPT_ROOT}" "$GOPATH/src/${AKO_PACKAGE}"
+
+readonly OUTPUT_PKG="github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/third_party/service-apis/client"
+readonly FQ_APIS="github.com/vmware-tanzu/service-apis/apis/v1alpha1pre1"
+readonly APIS_PKG=AKO_PACKAGE
+readonly CLIENTSET_NAME=versioned
+readonly CLIENTSET_PKG_NAME=clientset
+
+if [[ "${VERIFY_CODEGEN:-}" == "true" ]]; then
+  echo "Running in verification mode"
+  readonly VERIFY_FLAG="--verify-only"
+fi
+
+readonly COMMON_FLAGS="${VERIFY_FLAG:-} --go-header-file ${SCRIPT_ROOT}/hack/boilerplate.go.txt"
 
 echo "Generating clientset at ${OUTPUT_PKG}/${CLIENTSET_PKG_NAME}"
-"${gobin}/client-gen" --clientset-name "${CLIENTSET_NAME}" \
-  --input-base "" \
-  --input "${FQ_APIS}" \
-  --output-package "${OUTPUT_PKG}/${CLIENTSET_PKG_NAME}" \
-  --go-header-file "${BOILERPLATE_FILE}" \
-  ${COMMON_FLAGS-}
+go run k8s.io/code-generator/cmd/client-gen \
+        --clientset-name "${CLIENTSET_NAME}" \
+        --input-base "" \
+        --input "${FQ_APIS}" \
+        --output-package "${OUTPUT_PKG}/${CLIENTSET_PKG_NAME}" \
+        ${COMMON_FLAGS}
 
 echo "Generating listers at ${OUTPUT_PKG}/listers"
-"${gobin}/lister-gen" --input-dirs "${FQ_APIS}" \
-  --output-package "${OUTPUT_PKG}/listers" \
-  --go-header-file "${BOILERPLATE_FILE}" \
-  ${COMMON_FLAGS-}
+go run k8s.io/code-generator/cmd/lister-gen \
+        --input-dirs "${FQ_APIS}" \
+        --output-package "${OUTPUT_PKG}/listers" \
+        ${COMMON_FLAGS}
 
 echo "Generating informers at ${OUTPUT_PKG}/informers"
-"${gobin}/informer-gen" \
-  --input-dirs "${FQ_APIS}" \
-  --versioned-clientset-package "${OUTPUT_PKG}/${CLIENTSET_PKG_NAME}/${CLIENTSET_NAME}" \
-  --listers-package "${OUTPUT_PKG}/listers" \
-  --output-package "${OUTPUT_PKG}/informers" \
-  --go-header-file "${BOILERPLATE_FILE}" \
-  ${COMMON_FLAGS-}
+go run k8s.io/code-generator/cmd/informer-gen \
+         --input-dirs "${FQ_APIS}" \
+         --versioned-clientset-package "${OUTPUT_PKG}/${CLIENTSET_PKG_NAME}/${CLIENTSET_NAME}" \
+         --listers-package "${OUTPUT_PKG}/listers" \
+         --output-package "${OUTPUT_PKG}/informers" \
+         ${COMMON_FLAGS}

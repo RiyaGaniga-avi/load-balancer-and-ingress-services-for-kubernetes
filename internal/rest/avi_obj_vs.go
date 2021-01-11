@@ -215,6 +215,10 @@ func (rest *RestOperations) AviVsSniBuild(vs_meta *nodes.AviVsNode, rest_method 
 		SeGroupRef:            &seGroupRef,
 		ServiceMetadata:       &svc_mdata,
 		WafPolicyRef:          &vs_meta.WafPolicyRef,
+		SslProfileRef:         &vs_meta.SSLProfileRef,
+		AnalyticsProfileRef:   &vs_meta.AnalyticsProfileRef,
+		ErrorPageProfileRef:   &vs_meta.ErrorPageProfileRef,
+		Enabled:               vs_meta.Enabled,
 	}
 
 	//This VS has a TLSKeyCert associated, we need to mark 'type': 'VS_TYPE_VH_PARENT'
@@ -230,7 +234,16 @@ func (rest *RestOperations) AviVsSniBuild(vs_meta *nodes.AviVsNode, rest_method 
 		pool_ref := "/api/pool/?name=" + vs_meta.DefaultPool
 		sniChild.PoolRef = &pool_ref
 	}
-	var rest_ops []*utils.RestOp
+
+	var datascriptCollection []*avimodels.VSDataScripts
+	for i, script := range vs_meta.VsDatascriptRefs {
+		j := int32(i)
+		datascript := script
+		datascripts := &avimodels.VSDataScripts{VsDatascriptSetRef: &datascript, Index: &j}
+		datascriptCollection = append(datascriptCollection, datascripts)
+	}
+	sniChild.VsDatascripts = datascriptCollection
+
 	// No need of HTTP rules for TLS passthrough.
 	if vs_meta.TLSType != utils.TLS_PASSTHROUGH {
 		// this overwrites the sslkeycert created from the Secret object, with the one mentioned in HostRule.TLS
@@ -266,6 +279,8 @@ func (rest *RestOperations) AviVsSniBuild(vs_meta *nodes.AviVsNode, rest_method 
 
 		sniChild.HTTPPolicies = httpPolicyCollection
 	}
+
+	var rest_ops []*utils.RestOp
 	var rest_op utils.RestOp
 	var path string
 	if rest_method == utils.RestPut {
@@ -290,8 +305,8 @@ func (rest *RestOperations) AviVsSniBuild(vs_meta *nodes.AviVsNode, rest_method 
 
 func (rest *RestOperations) AviVsCacheAdd(rest_op *utils.RestOp, key string) error {
 	if (rest_op.Err != nil) || (rest_op.Response == nil) {
-		utils.AviLog.Warnf("key: %s, rest_op has err or no reponse for VS, err: %s, response: %s", key, rest_op.Err, rest_op.Response)
-		return errors.New("Errored rest_op")
+		utils.AviLog.Warnf("key: %s, rest_op has err or no response for VS, err: %s, response: %s", key, rest_op.Err, rest_op.Response)
+		return errors.New("Error rest_op")
 	}
 
 	resp_elems, ok := RestRespArrToObjByType(rest_op, "virtualservice", key)
@@ -592,7 +607,18 @@ func (rest *RestOperations) AviVsVipBuild(vsvip_meta *nodes.AviVSVIPNode, cache_
 	var dns_info_arr []*avimodels.DNSInfo
 	var path string
 	var rest_op utils.RestOp
+	var networkRef string
 	vipId, ipType := "0", "V4"
+
+	networkName := lib.GetNetworkName()
+	if networkName != "" {
+		networkRef = "/api/network/?name=" + networkName
+	}
+	subnetMask := lib.GetSubnetPrefixInt()
+	subnetAddress := lib.GetSubnetIP()
+
+	// all vsvip models would have auto_alloc set to true even in case of static IP programming
+	autoAllocate := true
 
 	if cache_obj != nil {
 		vsvip, err := rest.AviVsVipGet(key, cache_obj.Uuid, name)
@@ -615,64 +641,85 @@ func (rest *RestOperations) AviVsVipBuild(vsvip_meta *nodes.AviVSVIPNode, cache_
 		vsvip.DNSInfo = dns_info_arr
 
 		// handling static IP updates, this would throw an error
-		// for advl4 the error is propogated to the gateway status
+		// for advl4 the error is propagated to the gateway status
 		if vsvip_meta.IPAddress != "" {
-			auto_alloc := true
-			var vips []*avimodels.Vip
-			vips = append(vips, &avimodels.Vip{
+			vip := &avimodels.Vip{
 				VipID:          &vipId,
-				AutoAllocateIP: &auto_alloc,
+				AutoAllocateIP: &autoAllocate,
 				IPAddress: &avimodels.IPAddr{
 					Type: &ipType,
 					Addr: &vsvip_meta.IPAddress,
 				},
-			})
-			vsvip.Vip = vips
+			}
+			if networkName != "" {
+				vip.IPAMNetworkSubnet = &avimodels.IPNetworkSubnet{
+					NetworkRef: &networkRef,
+				}
+			}
+			vsvip.Vip = []*avimodels.Vip{vip}
 		}
 
-		path = "/api/vsvip/" + cache_obj.Uuid
-		rest_op = utils.RestOp{Path: path, Method: utils.RestPut, Obj: vsvip,
-			Tenant: vsvip_meta.Tenant, Model: "VsVip", Version: utils.CtrlVersion}
+		rest_op = utils.RestOp{
+			Path:    "/api/vsvip/" + cache_obj.Uuid,
+			Method:  utils.RestPut,
+			Obj:     vsvip,
+			Tenant:  vsvip_meta.Tenant,
+			Model:   "VsVip",
+			Version: utils.CtrlVersion,
+		}
 	} else {
-		auto_alloc := true
-		var vips []*avimodels.Vip
+		vip := avimodels.Vip{
+			VipID:          &vipId,
+			AutoAllocateIP: &autoAllocate,
+		}
 
-		// all vsvip models would have auto_alloc set to true even in case of static IP programming
-		vip := avimodels.Vip{AutoAllocateIP: &auto_alloc}
-		networkRef := lib.GetNetworkName()
-		if lib.IsPublicCloud() && lib.GetNetworkName() != "" {
-			vip.SubnetUUID = &networkRef
-		} else if vsvip_meta.IPAddress != "" {
-			vip.VipID = &vipId
-			vip.IPAddress = &avimodels.IPAddr{
-				Type: &ipType,
-				Addr: &vsvip_meta.IPAddress,
-			}
-		} else if lib.GetSubnetPrefix() == "" || lib.GetSubnetIP() == "" || lib.GetNetworkName() == "" {
-			utils.AviLog.Warnf("Incomplete values provided for subnet/cidr/network, will not use network ref in vsvip")
-		} else if !lib.GetAdvancedL4() {
-			intCidr, err := strconv.ParseInt(lib.GetSubnetPrefix(), 10, 32)
-			if err != nil {
-				utils.AviLog.Warnf("The value of CIDR couldn't be converted to int32. Defaulting to /24")
-				intCidr = 24
-			}
-			subnet_mask := int32(intCidr)
-			subnet_addr := lib.GetSubnetIP()
-			subnet_atype := "V4"
-			subnet_ip_obj := avimodels.IPAddr{Type: &subnet_atype, Addr: &subnet_addr}
-			subnet_obj := avimodels.IPAddrPrefix{IPAddr: &subnet_ip_obj, Mask: &subnet_mask}
-			networkRef = "/api/network/?name=" + lib.GetNetworkName()
+		// setting IPAMNetworkSubnet.Subnet value in case subnetCIDR is provided
+		if lib.GetSubnetPrefix() == "" || subnetAddress == "" {
+			utils.AviLog.Warnf("Incomplete values provided for subnetIP, will not use IPAMNetworkSubnet in vsvip")
+		} else if lib.IsPublicCloud() && lib.GetCloudType() == lib.CLOUD_GCP {
+			// add the IPAMNetworkSubnet
 			vip.IPAMNetworkSubnet = &avimodels.IPNetworkSubnet{
-				Subnet:     &subnet_obj,
-				NetworkRef: &networkRef,
+				Subnet: &avimodels.IPAddrPrefix{
+					IPAddr: &avimodels.IPAddr{Type: &ipType, Addr: &subnetAddress},
+					Mask:   &subnetMask,
+				},
+			}
+		} else if !lib.GetAdvancedL4() {
+			vip.IPAMNetworkSubnet = &avimodels.IPNetworkSubnet{
+				Subnet: &avimodels.IPAddrPrefix{
+					IPAddr: &avimodels.IPAddr{Type: &ipType, Addr: &subnetAddress},
+					Mask:   &subnetMask,
+				},
 			}
 		}
 
-		mask := int32(24)
+		// configuring static IP, from gateway.Addresses (advl4) and service.loadBalancerIP (l4)
+		if vsvip_meta.IPAddress != "" {
+			vip.IPAddress = &avimodels.IPAddr{Type: &ipType, Addr: &vsvip_meta.IPAddress}
+		}
+
+		// selecting network with user input, in case user input is not provided AKO relies on
+		// usable network configuration in ipamdnsproviderprofile
+		if networkName != "" {
+			if lib.IsPublicCloud() && lib.GetCloudType() != lib.CLOUD_GCP {
+				vip.SubnetUUID = &networkName
+			} else {
+				// Set the IPAM network subnet for all clouds except AWS and Azure
+				if vip.IPAMNetworkSubnet == nil {
+					// initialize if not initialized earlier
+					vip.IPAMNetworkSubnet = &avimodels.IPNetworkSubnet{}
+				}
+				vip.IPAMNetworkSubnet.NetworkRef = &networkRef
+			}
+
+		}
+
 		addr := "172.18.0.0"
-		atype := "V4"
-		sip := avimodels.IPAddr{Type: &atype, Addr: &addr}
-		ew_subnet := avimodels.IPAddrPrefix{IPAddr: &sip, Mask: &mask}
+		ew_subnet := avimodels.IPAddrPrefix{
+			IPAddr: &avimodels.IPAddr{Type: &ipType, Addr: &addr},
+			Mask:   &subnetMask,
+		}
+
 		var east_west bool
 		if vsvip_meta.EastWest == true {
 			vip.Subnet = &ew_subnet
@@ -694,12 +741,18 @@ func (rest *RestOperations) AviVsVipBuild(vsvip_meta *nodes.AviVSVIPNode, cache_
 				dns_info_arr = append(dns_info_arr, &dns_info)
 			}
 		}
+
 		vrfContextRef := "/api/vrfcontext?name=" + vsvip_meta.VrfContext
-		vsvip := avimodels.VsVip{Name: &name, TenantRef: &tenant, CloudRef: &cloudRef,
-			EastWestPlacement: &east_west, VrfContextRef: &vrfContextRef}
-		vsvip.DNSInfo = dns_info_arr
-		vips = append(vips, &vip)
-		vsvip.Vip = vips
+		vsvip := avimodels.VsVip{
+			Name:              &name,
+			TenantRef:         &tenant,
+			CloudRef:          &cloudRef,
+			EastWestPlacement: &east_west,
+			VrfContextRef:     &vrfContextRef,
+			DNSInfo:           dns_info_arr,
+			Vip:               []*avimodels.Vip{&vip},
+		}
+
 		macro := utils.AviRestObjMacro{ModelName: "VsVip", Data: vsvip}
 		path = "/api/macro"
 		// Patch an existing vsvip if it exists in the cache but not associated with this VS.
@@ -737,12 +790,23 @@ func (rest *RestOperations) AviVsVipBuild(vsvip_meta *nodes.AviVSVIPNode, cache_
 			}
 			vsvip_avi.DNSInfo = dns_info_arr
 			vsvip_avi.VrfContextRef = &vrfContextRef
+
 			path = "/api/vsvip/" + vsvip_cache_obj.Uuid
-			rest_op = utils.RestOp{Path: path, Method: utils.RestPut, Obj: vsvip_avi,
-				Tenant: vsvip_meta.Tenant, Model: "VsVip", Version: utils.CtrlVersion}
+			rest_op = utils.RestOp{Path: path,
+				Method:  utils.RestPut,
+				Obj:     vsvip_avi,
+				Tenant:  vsvip_meta.Tenant,
+				Model:   "VsVip",
+				Version: utils.CtrlVersion,
+			}
 		} else {
-			rest_op = utils.RestOp{Path: path, Method: utils.RestPost, Obj: macro,
-				Tenant: vsvip_meta.Tenant, Model: "VsVip", Version: utils.CtrlVersion}
+			rest_op = utils.RestOp{Path: path,
+				Method:  utils.RestPost,
+				Obj:     macro,
+				Tenant:  vsvip_meta.Tenant,
+				Model:   "VsVip",
+				Version: utils.CtrlVersion,
+			}
 		}
 	}
 
