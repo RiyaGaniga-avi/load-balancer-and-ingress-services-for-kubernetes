@@ -212,7 +212,7 @@ func (c *AviController) InitController(informers K8sinformers, registeredInforme
 		fastretrywg, _ = waitGroupMap[0]["fastretry"]
 		slowretrywg, _ = waitGroupMap[0]["slowretry"]
 	}
-	c.Start(stopCh)
+
 	/** Sequence:
 	  1. Initialize the graph layer queue.
 	  2. Do a full sync from main thread and publish all the models.
@@ -232,7 +232,7 @@ func (c *AviController) InitController(informers K8sinformers, registeredInforme
 		ingestionQueueParams := utils.WorkerQueue{NumWorkers: numWorkers, WorkqueueName: utils.ObjectIngestionLayer}
 		numGraphWorkers := lib.GetshardSize()
 		graphQueueParams := utils.WorkerQueue{NumWorkers: numGraphWorkers, WorkqueueName: utils.GraphLayer}
-		graphQueue = utils.SharedWorkQueue(ingestionQueueParams, graphQueueParams, slowRetryQParams, fastRetryQParams).GetQueueByName(utils.GraphLayer)
+		graphQueue = utils.SharedWorkQueue(&ingestionQueueParams, &graphQueueParams, &slowRetryQParams, &fastRetryQParams).GetQueueByName(utils.GraphLayer)
 
 	} else {
 		// Namespace sharding.
@@ -245,8 +245,12 @@ func (c *AviController) InitController(informers K8sinformers, registeredInforme
 		}
 		ingestionQueueParams := utils.WorkerQueue{NumWorkers: numWorkers, WorkqueueName: utils.ObjectIngestionLayer}
 		graphQueueParams := utils.WorkerQueue{NumWorkers: utils.NumWorkersGraph, WorkqueueName: utils.GraphLayer}
-		graphQueue = utils.SharedWorkQueue(ingestionQueueParams, graphQueueParams, slowRetryQParams, fastRetryQParams).GetQueueByName(utils.GraphLayer)
+		graphQueue = utils.SharedWorkQueue(&ingestionQueueParams, &graphQueueParams, &slowRetryQParams, &fastRetryQParams).GetQueueByName(utils.GraphLayer)
 	}
+
+	// Setup and start event handlers for objects.
+	c.SetupEventHandlers(informers)
+	c.Start(stopCh)
 
 	graphQueue.SyncFunc = SyncFromNodesLayer
 	graphQueue.Run(stopCh, graphwg)
@@ -258,7 +262,6 @@ func (c *AviController) InitController(informers K8sinformers, registeredInforme
 		interval = 300 // seconds, hardcoded for now.
 	}
 	// Set up the workers but don't start draining them.
-	c.SetupEventHandlers(informers)
 	if err != nil {
 		utils.AviLog.Errorf("Cannot convert full sync interval value to integer, pls correct the value and restart AKO. Error: %s", err)
 	} else {
@@ -325,7 +328,7 @@ func (c *AviController) FullSync() {
 		}
 		allModelsMap := objects.SharedAviGraphLister().GetAll()
 		var allModels []string
-		for modelName, _ := range allModelsMap.(map[string]interface{}) {
+		for modelName := range allModelsMap.(map[string]interface{}) {
 			allModels = append(allModels, modelName)
 		}
 		for _, modelName := range allModels {
@@ -418,6 +421,16 @@ func (c *AviController) FullSyncK8s() error {
 			}
 		}
 
+		albInfraObjs, err := lib.GetCRDInformers().NsxAlbInfraSettingInformer.Lister().List(labels.Set(nil).AsSelector())
+		if err != nil {
+			utils.AviLog.Errorf("Unable to retrieve the alinfraobjs during full sync: %s", err)
+		} else {
+			for _, albInfraObj := range albInfraObjs {
+				key := lib.NsxAlbInfraSetting + "/" + utils.ObjKey(albInfraObj)
+				nodes.DequeueIngestion(key, true)
+			}
+		}
+
 		// Ingress Section
 		if utils.GetInformers().IngressInformer != nil {
 			ingObjs, err := utils.GetInformers().IngressInformer.Lister().Ingresses("").List(labels.Set(nil).AsSelector())
@@ -454,6 +467,30 @@ func (c *AviController) FullSyncK8s() error {
 				}
 			}
 		}
+		if lib.UseServicesAPI() {
+			gatewayObjs, err := lib.GetSvcAPIInformers().GatewayInformer.Lister().Gateways("").List(labels.Set(nil).AsSelector())
+			if err != nil {
+				utils.AviLog.Errorf("Unable to retrieve the gateways during full sync: %s", err)
+				return err
+			} else {
+				for _, gatewayObj := range gatewayObjs {
+					key := lib.Gateway + "/" + utils.ObjKey(gatewayObj)
+					InformerStatusUpdatesForSvcApiGateway(key, gatewayObj)
+					nodes.DequeueIngestion(key, true)
+				}
+			}
+
+			gwClassObjs, err := lib.GetSvcAPIInformers().GatewayClassInformer.Lister().List(labels.Set(nil).AsSelector())
+			if err != nil {
+				utils.AviLog.Errorf("Unable to retrieve the gatewayclasses during full sync: %s", err)
+				return err
+			} else {
+				for _, gwClassObj := range gwClassObjs {
+					key := lib.GatewayClass + "/" + utils.ObjKey(gwClassObj)
+					nodes.DequeueIngestion(key, true)
+				}
+			}
+		}
 	} else {
 		//Gateway Section
 
@@ -486,7 +523,7 @@ func (c *AviController) FullSyncK8s() error {
 	utils.AviLog.Debugf("Got the VS keys: %s", vsKeys)
 	allModelsMap := objects.SharedAviGraphLister().GetAll()
 	var allModels []string
-	for modelName, _ := range allModelsMap.(map[string]interface{}) {
+	for modelName := range allModelsMap.(map[string]interface{}) {
 		// ignore vrf model, as it has been published already
 		if modelName != vrfModelName {
 			allModels = append(allModels, modelName)
@@ -543,8 +580,14 @@ func (c *AviController) DeleteModels() {
 	utils.AviLog.Infof("Deletion of all avi objects triggered")
 	status.AddStatefulSetStatus(lib.ObjectDeletionStartStatus, corev1.ConditionTrue)
 	allModels := objects.SharedAviGraphLister().GetAll()
+	allModelsMap := allModels.(map[string]interface{})
+	if len(allModelsMap) == 0 {
+		utils.AviLog.Infof("No Avi Object to delete, status would be updated in Statefulset")
+		status.AddStatefulSetStatus(lib.ObjectDeletionDoneStatus, corev1.ConditionFalse)
+		return
+	}
 	sharedQueue := utils.SharedWorkQueue().GetQueueByName(utils.GraphLayer)
-	for modelName, avimodelIntf := range allModels.(map[string]interface{}) {
+	for modelName, avimodelIntf := range allModelsMap {
 		objects.SharedAviGraphLister().Save(modelName, nil)
 		if avimodelIntf != nil {
 			avimodel := avimodelIntf.(*nodes.AviObjectGraph)

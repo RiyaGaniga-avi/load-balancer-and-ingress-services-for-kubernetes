@@ -12,6 +12,7 @@
 * limitations under the License.
 */
 
+// nolint:unused
 package scaletest
 
 import (
@@ -28,6 +29,7 @@ import (
 
 	"github.com/avinetworks/sdk/go/clients"
 	"github.com/onsi/gomega"
+
 	"github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/tests/scaletest/lib"
 )
 
@@ -63,6 +65,8 @@ var (
 	initialFQDNList          []string
 	ingressType              string
 	numOfIng                 int
+	numOfLBSvc               int
+	numOfPodsForLBSvc        = 100
 	clusterName              string
 	timeout                  string
 	dnsVSUUID                string
@@ -91,14 +95,19 @@ func Setup() {
 		fmt.Println("ERROR : Number of Go Routines cannot be zero or negative.")
 		os.Exit(0)
 	}
-	numOfIng, err = strconv.Atoi(os.Args[7])
+	numOfLBSvc, err = strconv.Atoi(os.Args[7])
+	if err != nil {
+		fmt.Println("ERROR : Number of LB services not provided")
+		os.Exit(0)
+	}
+	numOfIng, err = strconv.Atoi(os.Args[8])
 	if err != nil {
 		fmt.Println("ERROR : Number of ingresses not provided")
 		os.Exit(0)
 	}
 	testbed, er := os.Open(testbedFileName)
 	if er != nil {
-		fmt.Println("ERROR : Error opening testbed file ", testbedFileName, " with error : ", err)
+		fmt.Println("ERROR : Error opening testbed file ", testbedFileName, " with error : ", er)
 		os.Exit(0)
 	}
 	defer testbed.Close()
@@ -128,7 +137,7 @@ func Setup() {
 		fmt.Println("ERROR : Creating Avi Client : ", err)
 		os.Exit(0)
 	}
-	err = lib.CreateApp(appName, namespace)
+	err = lib.CreateApp(appName, namespace, 1)
 	if err != nil {
 		fmt.Println("ERROR : Creation of Deployment "+appName+" failed due to the error : ", err)
 		os.Exit(0)
@@ -152,12 +161,18 @@ func Cleanup() {
 	}
 }
 
+func ExitWithErrorf(t *testing.T, template string, args ...interface{}) {
+	t.Errorf(template, args...)
+	os.Exit(1)
+}
+
 /* Need to be executed for each test case
 Fetches the Avi controller state before the testing starts */
 func SetupForTesting(t *testing.T) {
 	pools := lib.FetchPools(t, AviClients[0])
 	initialNumOfPools = len(pools)
 	VSes := lib.FetchVirtualServices(t, AviClients[0])
+	initialVSesList = []string{}
 	for _, vs := range VSes {
 		initialVSesList = append(initialVSesList, *vs.Name)
 	}
@@ -179,7 +194,7 @@ func Reboot(t *testing.T, wg *sync.WaitGroup, nodeType string, controllerIP stri
 	cmd := exec.Command("sshpass", "-p", password, "ssh", "-t", loginID, " `echo ", password, " |  sudo -S shutdown --reboot 0 && exit `")
 	_, err := cmd.Output()
 	if err != nil {
-		t.Errorf("Cannot reboot %s beacuse : %v ", nodeType, err.Error())
+		t.Errorf("Cannot reboot %s because : %v ", nodeType, err.Error())
 	} else {
 		t.Logf("%s Rebooted", nodeType)
 	}
@@ -191,8 +206,7 @@ func RebootAko(t *testing.T, wg *sync.WaitGroup) {
 	t.Logf("Rebooting AKO pod %s of namespace %s ...", akoPodName, AKONAMESPACE)
 	err := lib.DeletePod(akoPodName, AKONAMESPACE)
 	if err != nil {
-		t.Fatalf("Cannot reboot Ako pod as : %v", err)
-		os.Exit(0)
+		ExitWithErrorf(t, "Cannot reboot Ako pod as : %v", err)
 	}
 	t.Logf("Ako rebooted.")
 	defer wg.Done()
@@ -275,19 +289,19 @@ func PoolVerification(t *testing.T) bool {
 	var poolList []string
 	if ingressType == INSECURE {
 		for i := 0; i < len(ingressHostNames); i++ {
-			ingressPoolName := clusterName + "--" + ingressHostNames[i] + "-" + namespace + "-" + ingressesCreated[i]
+			ingressPoolName := clusterName + "--" + ingressHostNames[i] + "_-" + namespace + "-" + ingressesCreated[i]
 			ingressPoolList = append(ingressPoolList, ingressPoolName)
 		}
 	} else if ingressType == SECURE {
 		for i := 0; i < len(ingressHostNames); i++ {
-			ingressPoolName := clusterName + "--" + namespace + "-" + ingressHostNames[i] + "-" + ingressesCreated[i]
+			ingressPoolName := clusterName + "--" + namespace + "-" + ingressHostNames[i] + "_-" + ingressesCreated[i]
 			ingressPoolList = append(ingressPoolList, ingressPoolName)
 		}
 	} else if ingressType == MULTIHOST {
 		for i := 0; i < len(ingressSecureHostNames); i++ {
-			ingressPoolName := clusterName + "--" + namespace + "-" + ingressSecureHostNames[i] + "-" + ingressesCreated[i]
+			ingressPoolName := clusterName + "--" + namespace + "-" + ingressSecureHostNames[i] + "_-" + ingressesCreated[i]
 			ingressPoolList = append(ingressPoolList, ingressPoolName)
-			ingressPoolName = clusterName + "--" + ingressInsecureHostNames[i] + "-" + namespace + "-" + ingressesCreated[i]
+			ingressPoolName = clusterName + "--" + ingressInsecureHostNames[i] + "_-" + namespace + "-" + ingressesCreated[i]
 			ingressPoolList = append(ingressPoolList, ingressPoolName)
 		}
 	}
@@ -383,7 +397,7 @@ func parallelInsecureIngressCreation(t *testing.T, wg *sync.WaitGroup, serviceNa
 	defer wg.Done()
 	ingresses, hostNames, err := lib.CreateInsecureIngress(ingressNamePrefix, serviceName, namespace, numOfIng, startIndex)
 	if err != nil {
-		t.Fatalf("Failed to create %s ingresses as : %v", ingressType, err)
+		ExitWithErrorf(t, "Failed to create %s ingresses as : %v", ingressType, err)
 	}
 	ingressesCreated = append(ingressesCreated, ingresses...)
 	ingressHostNames = append(ingressHostNames, hostNames...)
@@ -393,7 +407,7 @@ func parallelSecureIngressCreation(t *testing.T, wg *sync.WaitGroup, serviceName
 	defer wg.Done()
 	ingresses, hostNames, err := lib.CreateSecureIngress(ingressNamePrefix, serviceName, namespace, numOfIng, startIndex)
 	if err != nil {
-		t.Fatalf("Failed to create %s ingresses as : %v", ingressType, err)
+		ExitWithErrorf(t, "Failed to create %s ingresses as : %v", ingressType, err)
 	}
 	ingressesCreated = append(ingressesCreated, ingresses...)
 	ingressHostNames = append(ingressHostNames, hostNames...)
@@ -403,7 +417,7 @@ func parallelMultiHostIngressCreation(t *testing.T, wg *sync.WaitGroup, serviceN
 	defer wg.Done()
 	ingresses, secureHostNames, insecureHostNames, err := lib.CreateMultiHostIngress(ingressNamePrefix, serviceName, namespace, numOfIng, startIndex)
 	if err != nil {
-		t.Fatalf("Failed to create %s ingresses as : %v", ingressType, err)
+		ExitWithErrorf(t, "Failed to create %s ingresses as : %v", ingressType, err)
 	}
 	ingressesCreated = append(ingressesCreated, ingresses...)
 	ingressSecureHostNames = append(ingressSecureHostNames, secureHostNames...)
@@ -414,7 +428,7 @@ func parallelIngressDeletion(t *testing.T, wg *sync.WaitGroup, namespace string,
 	defer wg.Done()
 	ingresses, err := lib.DeleteIngress(namespace, listOfIngressToDelete)
 	if err != nil {
-		t.Fatalf("Failed to delete ingresses as : %v", err)
+		ExitWithErrorf(t, "Failed to delete ingresses as : %v", err)
 	}
 	ingressesDeleted = append(ingressesDeleted, ingresses...)
 }
@@ -423,7 +437,7 @@ func parallelIngressUpdation(t *testing.T, wg *sync.WaitGroup, namespace string,
 	defer wg.Done()
 	ingresses, err := lib.UpdateIngress(namespace, listofIngressToUpdate)
 	if err != nil {
-		t.Fatalf("Faoled to update ingresses as : %v", err)
+		ExitWithErrorf(t, "Failed to update ingresses as : %v", err)
 	}
 	ingressesUpdated = append(ingressesUpdated, ingresses...)
 }
@@ -437,7 +451,7 @@ func CreateIngressesParallel(t *testing.T, numOfIng int, initialNumOfPools int) 
 	nextStartInd := 0
 	switch {
 	case ingressType == INSECURE:
-		t.Logf("Creating %d %s Ingresses Parallely...", numOfIng, ingressType)
+		t.Logf("Creating %d %s Ingresses Parallelly...", numOfIng, ingressType)
 		CheckReboot(t, &wg)
 		for i := 0; i < numGoRoutines; i++ {
 			wg.Add(1)
@@ -450,7 +464,7 @@ func CreateIngressesParallel(t *testing.T, numOfIng int, initialNumOfPools int) 
 			}
 		}
 	case ingressType == SECURE:
-		t.Logf("Creating %d %s Ingresses Parallely...", numOfIng, ingressType)
+		t.Logf("Creating %d %s Ingresses Parallelly...", numOfIng, ingressType)
 		CheckReboot(t, &wg)
 		for i := 0; i < numGoRoutines; i++ {
 			wg.Add(1)
@@ -463,7 +477,7 @@ func CreateIngressesParallel(t *testing.T, numOfIng int, initialNumOfPools int) 
 			}
 		}
 	case ingressType == MULTIHOST:
-		t.Logf("Creating %d %s Ingresses Parallely...", numOfIng, ingressType)
+		t.Logf("Creating %d %s Ingresses Parallelly...", numOfIng, ingressType)
 		CheckReboot(t, &wg)
 		for i := 0; i < numGoRoutines; i++ {
 			wg.Add(1)
@@ -478,7 +492,7 @@ func CreateIngressesParallel(t *testing.T, numOfIng int, initialNumOfPools int) 
 	}
 	wg.Wait()
 	g.Expect(ingressesCreated).To(gomega.HaveLen(numOfIng))
-	t.Logf("Created %d %s Ingresses Parallely", numOfIng, ingressType)
+	t.Logf("Created %d %s Ingresses Parallelly", numOfIng, ingressType)
 	t.Logf("Verifiying Avi objects ...")
 	pollInterval, _ := time.ParseDuration(testPollInterval)
 	waitTimeIncr, _ := strconv.Atoi(testPollInterval[:len(testPollInterval)-1])
@@ -616,17 +630,17 @@ func HybridCreation(t *testing.T, wg *sync.WaitGroup, numOfIng int, deletionStar
 		case ingressType == INSECURE:
 			ingresses, _, err = lib.CreateInsecureIngress(ingressNamePrefix, listOfServicesCreated[0], namespace, 1, i)
 			if err != nil {
-				t.Fatalf("Failed to create %s ingresses as : %v", ingressType, err)
+				ExitWithErrorf(t, "Failed to create %s ingresses as : %v", ingressType, err)
 			}
 		case ingressType == SECURE:
 			ingresses, _, err = lib.CreateSecureIngress(ingressNamePrefix, listOfServicesCreated[0], namespace, 1, i)
 			if err != nil {
-				t.Fatalf("Failed to create %s ingresses as : %v", ingressType, err)
+				ExitWithErrorf(t, "Failed to create %s ingresses as : %v", ingressType, err)
 			}
 		case ingressType == MULTIHOST:
 			ingresses, _, _, err = lib.CreateMultiHostIngress(ingressNamePrefix, listOfServicesCreated, namespace, 1, i)
 			if err != nil {
-				t.Fatalf("Failed to create %s ingresses as : %v", ingressType, err)
+				ExitWithErrorf(t, "Failed to create %s ingresses as : %v", ingressType, err)
 			}
 		}
 		t.Logf("Created ingresses %s", ingresses)
@@ -647,7 +661,7 @@ func HybridUpdation(t *testing.T, wg *sync.WaitGroup, numOfIng int) {
 		if len(toUpdateIngresses) > 0 {
 			updatedIngresses, err := lib.UpdateIngress(namespace, toUpdateIngresses)
 			if err != nil {
-				t.Fatalf("Error updating ingresses as : %v ", err)
+				ExitWithErrorf(t, "Error updating ingresses as : %v ", err)
 				return
 			}
 			t.Logf("Updated ingresses %s", updatedIngresses)
@@ -667,7 +681,7 @@ func HybridDeletion(t *testing.T, wg *sync.WaitGroup, numOfIng int) {
 		if len(toDeleteIngresses) > 0 {
 			deletedIngresses, err := lib.DeleteIngress(namespace, toDeleteIngresses)
 			if err != nil {
-				t.Fatalf("Error deleting ingresses as : %v ", err)
+				ExitWithErrorf(t, "Error deleting ingresses as : %v ", err)
 			}
 			t.Logf("Deleted ingresses %s", deletedIngresses)
 			ingressesDeleted = append(ingressesDeleted, deletedIngresses...)
@@ -678,7 +692,7 @@ func HybridDeletion(t *testing.T, wg *sync.WaitGroup, numOfIng int) {
 	defer wg.Done()
 }
 
-/* Creates some(deletionStartPoint) ingresses first, followed by creation, updation and deletion of ingresses parallely */
+/* Creates some(deletionStartPoint) ingresses first, followed by creation, updation and deletion of ingresses parallelly */
 func HybridExecution(t *testing.T, numOfIng int, deletionStartPoint int) {
 	g := gomega.NewGomegaWithT(t)
 	var wg sync.WaitGroup
@@ -769,10 +783,117 @@ func UpdateIngressParallelWithNodeReboot(t *testing.T) {
 	REBOOTNODE = false
 }
 
+func CreateServiceTypeLBWithApp(t *testing.T, numPods int, numOfServices int, appNameLB string, serviceNamePrefixLB string, aviObjPrefix string) []string {
+	g := gomega.NewGomegaWithT(t)
+	t.Logf("Creating a %v deployment with %v replicas", appNameLB, numPods)
+	err := lib.CreateApp(appNameLB, namespace, numPods)
+	if err != nil {
+		t.Fatalf("ERROR : Could not create deployment for service type LB support as %v", err)
+	}
+
+	t.Logf("Creating %v services of type LB", numOfServices)
+	servicesCreated, port, err := lib.CreateLBService(serviceNamePrefixLB, appNameLB, namespace, numOfServices)
+	if err != nil {
+		t.Fatalf("ERROR : Could not create %d Services of type LB as %v", numOfServices, err)
+	}
+	t.Logf("Verifying AVI object creation...")
+	g.Eventually(func() bool {
+		var VSList []string
+		var poolList []string
+		/* Verifying pool creation*/
+		for _, svc := range servicesCreated {
+			VSList = append(VSList, aviObjPrefix+svc)
+			poolList = append(poolList, aviObjPrefix+svc+"--"+port)
+		}
+		pools := lib.FetchPools(t, AviClients[0])
+		var aviPoolList []string
+		for _, pool := range pools {
+			aviPoolList = append(aviPoolList, *pool.Name)
+		}
+		diffNum := len(DiffOfLists(poolList, aviPoolList))
+		if diffNum != initialNumOfPools {
+			return false
+		}
+		/* Verification of servers on pools */
+		for _, pool := range pools {
+			if strings.HasPrefix(*pool.Name, aviObjPrefix+serviceNamePrefixLB) == true {
+				if len(pool.Servers) != numPods {
+					return false
+				}
+			}
+		}
+		/* Verifying VS creation */
+		VSes := lib.FetchVirtualServices(t, AviClients[0])
+		var svcLBVSList []string
+		for _, vs := range VSes {
+			svcLBVSList = append(svcLBVSList, *vs.Name)
+		}
+		diffNum = len(DiffOfLists(VSList, svcLBVSList))
+		if diffNum != initialNumOfVSes {
+			return false
+		}
+		t.Logf("Verified pools, servers on pools and VSes")
+		return true
+	}, testCaseTimeOut, testPollInterval).Should(gomega.Equal(true))
+	return servicesCreated
+}
+
+func DeleteLBDeployment(t *testing.T, deploymentName string, serviceNamePrefixLB string, aviObjPrefix string) {
+	g := gomega.NewGomegaWithT(t)
+	t.Logf("Deleting deployment %v...", deploymentName)
+	err := lib.DeleteApp(deploymentName, namespace)
+	if err != nil {
+		t.Fatalf("Error deleting the deployment of LB service as : %v", err)
+	}
+	t.Logf("Deleted deployment %v", deploymentName)
+	t.Logf("Verifying AVI object deletion")
+	g.Eventually(func() bool {
+		pools := lib.FetchPools(t, AviClients[0])
+		for _, pool := range pools {
+			if strings.HasPrefix(*pool.Name, aviObjPrefix+serviceNamePrefixLB) == true {
+				if len(pool.Servers) != 0 {
+					return false
+				}
+			}
+		}
+		return true
+	}, testCaseTimeOut, testPollInterval).Should(gomega.Equal(true))
+}
+
+func DeleteServiceTypeLB(t *testing.T, serviceList []string) {
+	t.Logf("Deleting LB services...")
+	g := gomega.NewGomegaWithT(t)
+	err := lib.DeleteService(serviceList, namespace)
+	if err != nil {
+		t.Fatalf("ERROR : Deleting services of type LB %v", err)
+	}
+	t.Logf("Deleted LB services...")
+	t.Logf("Verifying AVI object deletion")
+	g.Eventually(func() int {
+		pools := lib.FetchPools(t, AviClients[0])
+		return len(pools)
+	}, testCaseTimeOut, testPollInterval).Should(gomega.Equal(initialNumOfPools))
+	t.Logf("Pools verified")
+	g.Eventually(func() int {
+		VSes := lib.FetchVirtualServices(t, AviClients[0])
+		return len(VSes)
+	}, testCaseTimeOut, testPollInterval).Should(gomega.Equal(initialNumOfVSes))
+	t.Logf("VSes verified")
+}
+
+func LBService(t *testing.T) {
+	appNameLB := "lb-" + appName
+	serviceNamePrefixLB := "lb-" + serviceNamePrefix
+	aviObjPrefix := clusterName + "--" + namespace + "-"
+	serviceList := CreateServiceTypeLBWithApp(t, numOfPodsForLBSvc, numOfLBSvc, appNameLB, serviceNamePrefixLB, aviObjPrefix)
+	DeleteLBDeployment(t, appNameLB, serviceNamePrefixLB, aviObjPrefix)
+	DeleteServiceTypeLB(t, serviceList)
+
+}
 func TestMain(t *testing.M) {
 	Setup()
-	t.Run()
-	Cleanup()
+	defer Cleanup()
+	os.Exit(t.Run())
 }
 
 func TestInsecureParallelCreationUpdationDeletionWithoutReboot(t *testing.T) {
@@ -887,4 +1008,9 @@ func TestMultiHostHybridExecution(t *testing.T) {
 	SetupForTesting(t)
 	ingressType = MULTIHOST
 	HybridExecution(t, numOfIng, numOfIng/2)
+}
+
+func TestServiceTypeLB(t *testing.T) {
+	SetupForTesting(t)
+	LBService(t)
 }

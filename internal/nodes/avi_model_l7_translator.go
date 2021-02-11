@@ -71,7 +71,7 @@ func (o *AviObjectGraph) BuildL7VSGraph(vsName string, namespace string, ingName
 			var storedHosts []string
 			// Mash the list of secure and insecure hosts.
 			for mtype, hostsbytype := range hostMap {
-				for host, _ := range hostsbytype {
+				for host := range hostsbytype {
 					if mtype == "secure" {
 						RemoveRedirectHTTPPolicyInModel(vsNode[0], host, key)
 					}
@@ -138,12 +138,17 @@ func (o *AviObjectGraph) BuildL7VSGraph(vsName string, namespace string, ingName
 						hostSlice = append(hostSlice, host)
 						poolNode := &AviPoolNode{Name: lib.GetL7PoolName(priorityLabel, namespace, ingName), PortName: obj.PortName, IngressName: ingName, Tenant: lib.GetTenant(), PriorityLabel: priorityLabel, Port: obj.Port, ServiceMetadata: avicache.ServiceMetadataObj{IngressName: ingName, Namespace: namespace, HostNames: hostSlice}}
 						poolNode.VrfContext = lib.GetVrf()
-						if !lib.IsNodePortMode() {
-							if servers := PopulateServers(poolNode, namespace, obj.ServiceName, true, key); servers != nil {
+						serviceType := lib.GetServiceType()
+						if serviceType == lib.NodePortLocal {
+							if servers := PopulateServersForNPL(poolNode, namespace, obj.ServiceName, true, key); servers != nil {
+								poolNode.Servers = servers
+							}
+						} else if serviceType == lib.NodePort {
+							if servers := PopulateServersForNodePort(poolNode, namespace, obj.ServiceName, true, key); servers != nil {
 								poolNode.Servers = servers
 							}
 						} else {
-							if servers := PopulateServersForNodePort(poolNode, namespace, obj.ServiceName, true, key); servers != nil {
+							if servers := PopulateServers(poolNode, namespace, obj.ServiceName, true, key); servers != nil {
 								poolNode.Servers = servers
 							}
 						}
@@ -168,7 +173,7 @@ func (o *AviObjectGraph) BuildL7VSGraph(vsName string, namespace string, ingName
 							Namespace:   namespace,
 						},
 					}
-					if lib.GetSEGName() != lib.DEFAULT_GROUP {
+					if lib.GetSEGName() != lib.DEFAULT_SE_GROUP {
 						sniNode.ServiceEngineGroup = lib.GetSEGName()
 					}
 					sniNode.VrfContext = lib.GetVrf()
@@ -230,7 +235,7 @@ func (o *AviObjectGraph) DeletePoolForIngress(namespace, ingName, key string, vs
 	var hosts []string
 	// Mash the list of secure and insecure hosts.
 	for mtype, hostsbytype := range hostMap {
-		for host, _ := range hostsbytype {
+		for host := range hostsbytype {
 			if mtype == "secure" {
 				RemoveRedirectHTTPPolicyInModel(vsNode[0], host, key)
 			}
@@ -301,7 +306,7 @@ func (o *AviObjectGraph) ConstructAviL7VsNode(vsName string, key string) *AviVsN
 	// This is a shared VS - always created in the admin namespace for now.
 	avi_vs_meta = &AviVsNode{Name: vsName, Tenant: lib.GetTenant(),
 		EastWest: false, SharedVS: true}
-	if lib.GetSEGName() != lib.DEFAULT_GROUP {
+	if lib.GetSEGName() != lib.DEFAULT_SE_GROUP {
 		avi_vs_meta.ServiceEngineGroup = lib.GetSEGName()
 	}
 	// Hard coded ports for the shared VS
@@ -324,18 +329,6 @@ func (o *AviObjectGraph) ConstructAviL7VsNode(vsName string, key string) *AviVsN
 	o.ConstructHTTPDataScript(vsName, key, avi_vs_meta)
 	var fqdns []string
 
-	subDomains := GetDefaultSubDomain()
-	if subDomains != nil {
-		var fqdn string
-		if strings.HasPrefix(subDomains[0], ".") {
-			fqdn = vsName + "." + lib.GetTenant() + subDomains[0]
-		} else {
-			fqdn = vsName + "." + lib.GetTenant() + "." + subDomains[0]
-		}
-		fqdns = append(fqdns, fqdn)
-	} else {
-		utils.AviLog.Warnf("key: %s, msg: there is no nsipamdns configured in the cloud, not configuring the default fqdn", key)
-	}
 	vsVipNode := &AviVSVIPNode{Name: lib.GetVsVipName(vsName), Tenant: lib.GetTenant(), FQDNs: fqdns,
 		EastWest: false, VrfContext: vrfcontext}
 	avi_vs_meta.VSVIPRefs = append(avi_vs_meta.VSVIPRefs, vsVipNode)
@@ -536,16 +529,21 @@ func (o *AviObjectGraph) BuildPolicyPGPoolsForSNI(vsNode []*AviVsNode, tlsNode *
 			if hostpath.reencrypt == true {
 				o.BuildPoolSecurity(poolNode, hostpath, key)
 			}
-
-			if !lib.IsNodePortMode() {
-				if servers := PopulateServers(poolNode, namespace, path.ServiceName, true, key); servers != nil {
+			serviceType := lib.GetServiceType()
+			if serviceType == lib.NodePortLocal {
+				if servers := PopulateServersForNPL(poolNode, namespace, path.ServiceName, true, key); servers != nil {
 					poolNode.Servers = servers
 				}
-			} else {
+			} else if serviceType == lib.NodePort {
 				if servers := PopulateServersForNodePort(poolNode, namespace, path.ServiceName, true, key); servers != nil {
 					poolNode.Servers = servers
 				}
+			} else {
+				if servers := PopulateServers(poolNode, namespace, path.ServiceName, true, key); servers != nil {
+					poolNode.Servers = servers
+				}
 			}
+
 			pool_ref := fmt.Sprintf("/api/pool?name=%s", poolNode.Name)
 			ratio := path.weight
 			pgNode.Members = append(pgNode.Members, &avimodels.PoolGroupMember{PoolRef: &pool_ref, Ratio: &ratio})

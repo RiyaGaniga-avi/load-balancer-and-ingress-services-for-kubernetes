@@ -96,12 +96,17 @@ func (o *AviObjectGraph) BuildL7VSGraphHostNameShard(vsName, hostname string, ro
 				},
 			}
 			poolNode.VrfContext = lib.GetVrf()
-			if !lib.IsNodePortMode() {
-				if servers := PopulateServers(poolNode, namespace, obj.ServiceName, true, key); servers != nil {
+			serviceType := lib.GetServiceType()
+			if serviceType == lib.NodePortLocal {
+				if servers := PopulateServersForNPL(poolNode, namespace, obj.ServiceName, true, key); servers != nil {
+					poolNode.Servers = servers
+				}
+			} else if serviceType == lib.NodePort {
+				if servers := PopulateServersForNodePort(poolNode, namespace, obj.ServiceName, true, key); servers != nil {
 					poolNode.Servers = servers
 				}
 			} else {
-				if servers := PopulateServersForNodePort(poolNode, namespace, obj.ServiceName, true, key); servers != nil {
+				if servers := PopulateServers(poolNode, namespace, obj.ServiceName, true, key); servers != nil {
 					poolNode.Servers = servers
 				}
 			}
@@ -287,7 +292,6 @@ func getPaths(pathMapArr []IngressHostPathSvc) []string {
 func sniNodeHostName(routeIgrObj RouteIngressModel, tlssetting TlsSettings, ingName, namespace, key string, fullsync bool, sharedQueue *utils.WorkerQueue, modelList *[]string) map[string][]IngressHostPathSvc {
 	hostPathSvcMap := make(map[string][]IngressHostPathSvc)
 	for sniHost, paths := range tlssetting.Hosts {
-		var allSniHosts []string
 		var sniHosts []string
 		hostPathSvcMap[sniHost] = paths
 		hostMap := HostNamePathSecrets{paths: getPaths(paths), secretName: tlssetting.SecretName}
@@ -303,7 +307,6 @@ func sniNodeHostName(routeIgrObj RouteIngressModel, tlssetting TlsSettings, ingN
 		}
 		SharedHostNameLister().Save(sniHost, ingressHostMap)
 		sniHosts = append(sniHosts, sniHost)
-		allSniHosts = append(allSniHosts, sniHost)
 		shardVsName := DeriveHostNameShardVS(sniHost, key)
 		// For each host, create a SNI node with the secret giving us the key and cert.
 		// construct a SNI VS node per tls setting which corresponds to one secret
@@ -333,10 +336,10 @@ func sniNodeHostName(routeIgrObj RouteIngressModel, tlssetting TlsSettings, ingN
 			certsBuilt = true
 		}
 
-		sniNode := vsNode[0].GetSniNodeForName(lib.GetSniNodeName(ingName, namespace, tlssetting.SecretName, sniHost))
+		sniNode := vsNode[0].GetSniNodeForName(lib.GetSniNodeName(ingName, namespace, sniSecretName, sniHost))
 		if sniNode == nil {
 			sniNode = &AviVsNode{
-				Name:         lib.GetSniNodeName(ingName, namespace, tlssetting.SecretName, sniHost),
+				Name:         lib.GetSniNodeName(ingName, namespace, sniSecretName, sniHost),
 				VHParentName: vsNode[0].Name,
 				Tenant:       lib.GetTenant(),
 				IsSNIChild:   true,
@@ -355,7 +358,7 @@ func sniNodeHostName(routeIgrObj RouteIngressModel, tlssetting TlsSettings, ingN
 				certsBuilt = true
 			}
 		}
-		if lib.GetSEGName() != lib.DEFAULT_GROUP {
+		if lib.GetSEGName() != lib.DEFAULT_SE_GROUP {
 			sniNode.ServiceEngineGroup = lib.GetSEGName()
 		}
 		sniNode.VrfContext = lib.GetVrf()
@@ -364,7 +367,7 @@ func sniNodeHostName(routeIgrObj RouteIngressModel, tlssetting TlsSettings, ingN
 		}
 		if certsBuilt {
 			isIngr := routeIgrObj.GetType() == utils.Ingress
-			aviModel.(*AviObjectGraph).BuildPolicyPGPoolsForSNI(vsNode, sniNode, namespace, ingName, tlssetting, tlssetting.SecretName, key, isIngr, sniHost)
+			aviModel.(*AviObjectGraph).BuildPolicyPGPoolsForSNI(vsNode, sniNode, namespace, ingName, tlssetting, sniSecretName, key, isIngr, sniHost)
 			foundSniModel := FindAndReplaceSniInModel(sniNode, vsNode, key)
 			if !foundSniModel {
 				vsNode[0].SniNodes = append(vsNode[0].SniNodes, sniNode)

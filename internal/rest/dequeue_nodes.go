@@ -153,7 +153,17 @@ func (rest *RestOperations) vrfCU(key, vrfName string, avimodel *nodes.AviObject
 	vrfKey := avicache.NamespaceName{Namespace: lib.GetTenant(), Name: vrfName}
 	utils.AviLog.Debugf("key: %s, msg: Executing rest for vrf %s\n", key, vrfName)
 	utils.AviLog.Debugf("key: %s, msg: restops %v\n", key, *restOp)
-	rest.ExecuteRestAndPopulateCache(restOps, vrfKey, avimodel, key)
+	success := rest.ExecuteRestAndPopulateCache(restOps, vrfKey, avimodel, key)
+
+	if success && lib.ConfigDeleteSyncChan != nil {
+		vsKeysPending := rest.cache.VsCacheMeta.AviGetAllKeys()
+		utils.AviLog.Infof("key: %s, msg: Number of VS deletion pending: %d", key, len(vsKeysPending))
+		if len(vsKeysPending) == 0 {
+			utils.AviLog.Debugf("key: %s, msg: sending signal for vs deletion notification", key)
+			close(lib.ConfigDeleteSyncChan)
+			lib.ConfigDeleteSyncChan = nil
+		}
+	}
 }
 
 // CheckAndPublishForRetry : Check if the error is of type 401, has string "Rest request error" or was timed out,
@@ -367,9 +377,10 @@ func (rest *RestOperations) getVsCacheObj(vsKey avicache.NamespaceName, key stri
 
 func (rest *RestOperations) deleteVSOper(vsKey avicache.NamespaceName, vs_cache_obj *avicache.AviVsCache, namespace string, key string, skipVS, skipVSVip bool) bool {
 	var rest_ops []*utils.RestOp
-	sni_vs_keys := make([]string, len(vs_cache_obj.SNIChildCollection))
-	copy(sni_vs_keys, vs_cache_obj.SNIChildCollection)
 	if vs_cache_obj != nil {
+		sni_vs_keys := make([]string, len(vs_cache_obj.SNIChildCollection))
+		copy(sni_vs_keys, vs_cache_obj.SNIChildCollection)
+
 		// VS delete should delete everything together.
 		passthroughChild := vs_cache_obj.ServiceMetadataObj.PassthroughChildRef
 		if passthroughChild != "" {
@@ -1543,15 +1554,6 @@ func (rest *RestOperations) PkiProfileDelete(pkiProfileDelete []avicache.Namespa
 }
 
 func Remove(s []avicache.NamespaceName, r avicache.NamespaceName) []avicache.NamespaceName {
-	for i, v := range s {
-		if v == r {
-			return append(s[:i], s[i+1:]...)
-		}
-	}
-	return s
-}
-
-func filterKeyFromStringSlice(s []string, r string) []string {
 	for i, v := range s {
 		if v == r {
 			return append(s[:i], s[i+1:]...)

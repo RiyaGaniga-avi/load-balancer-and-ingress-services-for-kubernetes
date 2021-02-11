@@ -32,12 +32,13 @@ const (
 	SUBNET_PREFIX                              = "SUBNET_PREFIX"
 	NETWORK_NAME                               = "NETWORK_NAME"
 	SEG_NAME                                   = "SEG_NAME"
-	DEFAULT_GROUP                              = "Default-Group"
+	DEFAULT_SE_GROUP                           = "Default-Group"
 	NODE_NETWORK_LIST                          = "NODE_NETWORK_LIST"
 	NODE_NETWORK_MAX_ENTRIES                   = 5
 	L7_SHARD_SCHEME                            = "L7_SHARD_SCHEME"
 	DEFAULT_DOMAIN                             = "DEFAULT_DOMAIN"
 	ADVANCED_L4                                = "ADVANCED_L4"
+	SERVICES_API                               = "SERVICES_API"
 	CLUSTER_NAME                               = "CLUSTER_NAME"
 	CLUSTER_ID                                 = "CLUSTER_ID"
 	CLOUD_VCENTER                              = "CLOUD_VCENTER"
@@ -67,6 +68,7 @@ const (
 	PolicyPass                                 = "PASSTHROUGH"
 	DeleteConfig                               = "deleteConfig"
 	NodePort                                   = "NodePort"
+	NodePortLocal                              = "NodePortLocal"
 	RouteSecretsPrefix                         = "-route-secret"
 	CertTypeVS                                 = "SSL_CERTIFICATE_TYPE_VIRTUALSERVICE"
 	CertTypeCA                                 = "SSL_CERTIFICATE_TYPE_CA"
@@ -74,6 +76,7 @@ const (
 	Advl4ControllerVersion                     = "20.1.2"
 	HostRule                                   = "HostRule"
 	HTTPRule                                   = "HTTPRule"
+	NsxAlbInfraSetting                         = "NsxAlbInfraSetting"
 	DummySecret                                = "@avisslkeycertrefdummy"
 	StatusRejected                             = "Rejected"
 	StatusAccepted                             = "Accepted"
@@ -95,7 +98,6 @@ const (
 	PassthroughInsecure                        = "-insecure"
 	AviControllerVSVipIDChangeError            = "Changing an existing VIP's vip_id is not supported"
 	AviControllerRecreateVIPError              = "If a new preferred IP is needed, please recreate the VIP"
-	DefaultSEGroup                             = "Default-Group"
 	GatewayFinalizer                           = "gateway.ako.vmware.com"
 	ClusterStatusCacheKey                      = "cluster-runtime"
 	AviObjDeletionTime                         = 30 // Minutes
@@ -105,11 +107,27 @@ const (
 	ObjectDeletionDoneStatus                   = "Done"
 	ObjectDeletionTimeoutStatus                = "Timeout"
 	DefaultIngressClassAnnotation              = "ingressclass.kubernetes.io/is-default-class"
+	ExternalDNSAnnotation                      = "external-dns.alpha.kubernetes.io/hostname"
 	DefaultRouteCert                           = "router-certs-default"
+	NPLPodAnnotation                           = "nodeportlocal.antrea.io"
+	AkoGroup                                   = "ako.vmware.com"
 
-	//Specifies command used in namespace event handler
+	// Specifies command used in namespace event handler
 	NsFilterAdd    = "ADD"
 	NsFilterDelete = "DELETE"
+)
+
+// Cache Indexer constants.
+const (
+	// NsxAlbSettingGWClassIndex maintains a map of NsxAlbInfraSetting Name to
+	// GatewayClass Objects. This helps in fetching all GatewayClasses with a
+	// given NsxAlbinfraSetting Name.
+	NsxAlbSettingGWClassIndex = "nsxAlbSettingGWClass"
+
+	// GatewayClassGatewayIndex maintains a map of GatewayClass Name to
+	// Gateway Objects. This helps in fetching all Gateways with a
+	// given GatewayClass Name.
+	GatewayClassGatewayIndex = "gatewayClassGateway"
 )
 
 const (

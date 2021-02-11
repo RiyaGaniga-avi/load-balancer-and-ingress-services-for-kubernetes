@@ -52,8 +52,7 @@ var ctrlonce sync.Once
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;create;update;patch
 
 type AviController struct {
-	worker_id       uint32
-	worker_id_mutex sync.Mutex
+	worker_id uint32
 	//recorder        record.EventRecorder
 	informers        *utils.Informers
 	dynamicInformers *lib.DynamicInformers
@@ -167,7 +166,7 @@ func isNamespaceUpdated(oldNS, newNS *corev1.Namespace) bool {
 func AddIngressFromNSToIngestionQueue(numWorkers uint32, c *AviController, namespace string, msg string) {
 	ingObjs, err := utils.GetInformers().IngressInformer.Lister().Ingresses(namespace).List(labels.Set(nil).AsSelector())
 	if err != nil {
-		utils.AviLog.Errorf("NS to ingress queue add: Error occured while retrieving ingresss for namespace: %s", namespace)
+		utils.AviLog.Errorf("NS to ingress queue add: Error occurred while retrieving ingresss for namespace: %s", namespace)
 		return
 	}
 	for _, ingObj := range ingObjs {
@@ -181,7 +180,7 @@ func AddIngressFromNSToIngestionQueue(numWorkers uint32, c *AviController, names
 func AddRoutesFromNSToIngestionQueue(numWorkers uint32, c *AviController, namespace string, msg string) {
 	routeObjs, err := utils.GetInformers().RouteInformer.Lister().Routes(namespace).List(labels.Set(nil).AsSelector())
 	if err != nil {
-		utils.AviLog.Errorf("NS to route queue add: Error occured while retrieving routes for namespace: %s", namespace)
+		utils.AviLog.Errorf("NS to route queue add: Error occurred while retrieving routes for namespace: %s", namespace)
 		return
 	}
 	for _, routeObj := range routeObjs {
@@ -219,7 +218,7 @@ func AddNamespaceEventHandler(numWorkers uint32, c *AviController) cache.Resourc
 				utils.AddNamespaceToFilter(ns.GetName(), nsFilterObj)
 				utils.AviLog.Debugf("NS Add event: Namespace passed filter: %s", ns.GetName())
 			} else {
-				//Case: previoulsy deleted valid NS, added back with no labels or invalid labels but nsList contain that ns
+				//Case: previously deleted valid NS, added back with no labels or invalid labels but nsList contain that ns
 				utils.AviLog.Debugf("NS Add event: Namespace did not pass filter: %s", ns.GetName())
 				if utils.CheckIfNamespaceAccepted(ns.GetName(), nsFilterObj, nil, true) {
 					utils.AviLog.Debugf("Ns Add event: Deleting previous valid namespace: %s from valid NS List", ns.GetName())
@@ -284,7 +283,7 @@ func AddRouteEventHandler(numWorkers uint32, c *AviController) cache.ResourceEve
 			key := utils.OshiftRoute + "/" + utils.ObjKey(route)
 			bkt := utils.Bkt(namespace, numWorkers)
 			if !lib.HasValidBackends(route.Spec, route.Name, namespace, key) {
-				status.UpdateRouteStatusWithErrMsg(route.Name, namespace, lib.DuplicateBackends)
+				status.UpdateRouteStatusWithErrMsg(key, route.Name, namespace, lib.DuplicateBackends)
 			}
 			c.workqueue[bkt].AddRateLimited(key)
 			utils.AviLog.Debugf("key: %s, msg: ADD", key)
@@ -333,7 +332,7 @@ func AddRouteEventHandler(numWorkers uint32, c *AviController) cache.ResourceEve
 				key := utils.OshiftRoute + "/" + utils.ObjKey(newRoute)
 				bkt := utils.Bkt(namespace, numWorkers)
 				if !lib.HasValidBackends(newRoute.Spec, newRoute.Name, namespace, key) {
-					status.UpdateRouteStatusWithErrMsg(newRoute.Name, namespace, lib.DuplicateBackends)
+					status.UpdateRouteStatusWithErrMsg(key, newRoute.Name, namespace, lib.DuplicateBackends)
 				}
 				c.workqueue[bkt].AddRateLimited(key)
 				utils.AviLog.Debugf("key: %s, msg: UPDATE", key)
@@ -341,6 +340,60 @@ func AddRouteEventHandler(numWorkers uint32, c *AviController) cache.ResourceEve
 		},
 	}
 	return routeEventHandler
+}
+
+func AddPodEventHandler(numWorkers uint32, c *AviController) cache.ResourceEventHandler {
+	podEventHandler := cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			if c.DisableSync {
+				return
+			}
+			pod := obj.(*corev1.Pod)
+			namespace, _, _ := cache.SplitMetaNamespaceKey(utils.ObjKey(pod))
+			key := utils.Pod + "/" + utils.ObjKey(pod)
+			bkt := utils.Bkt(namespace, numWorkers)
+			c.workqueue[bkt].AddRateLimited(key)
+			utils.AviLog.Debugf("key: %s, msg: ADD\n", key)
+		},
+		DeleteFunc: func(obj interface{}) {
+			if c.DisableSync {
+				return
+			}
+			pod, ok := obj.(*corev1.Pod)
+			if !ok {
+				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+				if !ok {
+					utils.AviLog.Errorf("couldn't get object from tombstone %#v", obj)
+					return
+				}
+				pod, ok = tombstone.Obj.(*corev1.Pod)
+				if !ok {
+					utils.AviLog.Errorf("Tombstone contained object that is not an Pod: %#v", obj)
+					return
+				}
+			}
+			namespace, _, _ := cache.SplitMetaNamespaceKey(utils.ObjKey(pod))
+			key := utils.Pod + "/" + utils.ObjKey(pod)
+			bkt := utils.Bkt(namespace, numWorkers)
+			c.workqueue[bkt].AddRateLimited(key)
+			utils.AviLog.Debugf("key: %s, msg: DELETE", key)
+		},
+		UpdateFunc: func(old, cur interface{}) {
+			if c.DisableSync {
+				return
+			}
+			oldPod := old.(*corev1.Pod)
+			newPod := cur.(*corev1.Pod)
+			if !reflect.DeepEqual(newPod, oldPod) {
+				namespace, _, _ := cache.SplitMetaNamespaceKey(utils.ObjKey(newPod))
+				key := utils.Pod + "/" + utils.ObjKey(oldPod)
+				bkt := utils.Bkt(namespace, numWorkers)
+				c.workqueue[bkt].AddRateLimited(key)
+				utils.AviLog.Debugf("key: %s, msg: UPDATE", key)
+			}
+		},
+	}
+	return podEventHandler
 }
 
 func (c *AviController) SetupEventHandlers(k8sinfo K8sinformers) {
@@ -431,8 +484,11 @@ func (c *AviController) SetupEventHandlers(k8sinfo K8sinformers) {
 				if lib.GetAdvancedL4() {
 					checkSvcForGatewayPortConflict(svc, key)
 				}
+				if lib.UseServicesAPI() {
+					checkSvcForSvcApiGatewayPortConflict(svc, key)
+				}
 			} else {
-				if lib.GetAdvancedL4() {
+				if lib.GetAdvancedL4() || lib.UseServicesAPI() {
 					return
 				}
 				key = utils.Service + "/" + utils.ObjKey(svc)
@@ -465,7 +521,7 @@ func (c *AviController) SetupEventHandlers(k8sinfo K8sinformers) {
 			if isSvcLb {
 				key = utils.L4LBService + "/" + utils.ObjKey(svc)
 			} else {
-				if lib.GetAdvancedL4() {
+				if lib.GetAdvancedL4() || lib.UseServicesAPI() {
 					return
 				}
 				key = utils.Service + "/" + utils.ObjKey(svc)
@@ -490,8 +546,11 @@ func (c *AviController) SetupEventHandlers(k8sinfo K8sinformers) {
 					if lib.GetAdvancedL4() {
 						checkSvcForGatewayPortConflict(svc, key)
 					}
+					if lib.UseServicesAPI() {
+						checkSvcForSvcApiGatewayPortConflict(svc, key)
+					}
 				} else {
-					if lib.GetAdvancedL4() {
+					if lib.GetAdvancedL4() || lib.UseServicesAPI() {
 						return
 					}
 					key = utils.Service + "/" + utils.ObjKey(svc)
@@ -646,6 +705,10 @@ func (c *AviController) SetupEventHandlers(k8sinfo K8sinformers) {
 		// servicesAPI handlers GW/GWClass
 		c.SetupAdvL4EventHandlers(numWorkers)
 		return
+	}
+
+	if lib.UseServicesAPI() {
+		c.SetupSvcApiEventHandlers(numWorkers)
 	}
 
 	ingressEventHandler := cache.ResourceEventHandlerFuncs{
@@ -847,6 +910,10 @@ func (c *AviController) SetupEventHandlers(k8sinfo K8sinformers) {
 		c.informers.NSInformer.Informer().AddEventHandler(namespaceEventHandler)
 	}
 
+	if lib.GetServiceType() == lib.NodePortLocal {
+		podEventHandler := AddPodEventHandler(numWorkers, c)
+		c.informers.PodInformer.Informer().AddEventHandler(podEventHandler)
+	}
 }
 
 func validateAviConfigMap(obj interface{}) (*corev1.ConfigMap, bool) {
@@ -883,6 +950,10 @@ func (c *AviController) Start(stopCh <-chan struct{}) {
 		c.informers.SecretInformer.Informer().HasSynced,
 	}
 
+	if lib.GetServiceType() == lib.NodePortLocal {
+		go c.informers.PodInformer.Informer().Run(stopCh)
+		informersList = append(informersList, c.informers.PodInformer.Informer().HasSynced)
+	}
 	if lib.GetCNIPlugin() == lib.CALICO_CNI {
 		go c.dynamicInformers.CalicoBlockAffinityInformer.Informer().Run(stopCh)
 		informersList = append(informersList, c.dynamicInformers.CalicoBlockAffinityInformer.Informer().HasSynced)
@@ -903,8 +974,20 @@ func (c *AviController) Start(stopCh <-chan struct{}) {
 		if !cache.WaitForCacheSync(stopCh, lib.GetAdvL4Informers().GatewayInformer.Informer().HasSynced) {
 			runtime.HandleError(fmt.Errorf("Timed out waiting for Gateway caches to sync"))
 		}
-		utils.AviLog.Info("Service APIs caches synced")
+		utils.AviLog.Info("Service APIs v1alphapre1 caches synced")
 	} else {
+		if lib.UseServicesAPI() {
+			go lib.GetSvcAPIInformers().GatewayClassInformer.Informer().Run(stopCh)
+			go lib.GetSvcAPIInformers().GatewayInformer.Informer().Run(stopCh)
+
+			if !cache.WaitForCacheSync(stopCh, lib.GetSvcAPIInformers().GatewayClassInformer.Informer().HasSynced) {
+				runtime.HandleError(fmt.Errorf("Timed out waiting for GatewayClass caches to sync"))
+			}
+			if !cache.WaitForCacheSync(stopCh, lib.GetSvcAPIInformers().GatewayInformer.Informer().HasSynced) {
+				runtime.HandleError(fmt.Errorf("Timed out waiting for Gateway caches to sync"))
+			}
+			utils.AviLog.Info("Service APIs caches synced")
+		}
 		if c.informers.IngressInformer != nil {
 			go c.informers.IngressInformer.Informer().Run(stopCh)
 			informersList = append(informersList, c.informers.IngressInformer.Informer().HasSynced)
@@ -928,6 +1011,10 @@ func (c *AviController) Start(stopCh <-chan struct{}) {
 
 		go lib.GetCRDInformers().HostRuleInformer.Informer().Run(stopCh)
 		go lib.GetCRDInformers().HTTPRuleInformer.Informer().Run(stopCh)
+		go lib.GetCRDInformers().NsxAlbInfraSettingInformer.Informer().Run(stopCh)
+		if !cache.WaitForCacheSync(stopCh, lib.GetCRDInformers().NsxAlbInfraSettingInformer.Informer().HasSynced) {
+			runtime.HandleError(fmt.Errorf("Timed out waiting for NsxAlbInfraSettingInformer caches to sync"))
+		}
 		// separate wait steps to try getting hostrules synced first,
 		// since httprule has a key relation to hostrules.
 		if !cache.WaitForCacheSync(stopCh, lib.GetCRDInformers().HostRuleInformer.Informer().HasSynced) {

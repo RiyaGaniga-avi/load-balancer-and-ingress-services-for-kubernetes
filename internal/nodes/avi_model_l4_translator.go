@@ -25,28 +25,27 @@ import (
 
 	"github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/pkg/utils"
 
+	"github.com/avinetworks/sdk/go/models"
 	avimodels "github.com/avinetworks/sdk/go/models"
 	corev1 "k8s.io/api/core/v1"
 )
 
-func contains(s []int32, e int32) bool {
-	for _, a := range s {
-		if a == e {
-			return true
-		}
-	}
-	return false
-}
-
 func (o *AviObjectGraph) ConstructAviL4VsNode(svcObj *corev1.Service, key string) *AviVsNode {
 	var avi_vs_meta *AviVsNode
 	var fqdns []string
-	// FQDN should come from the cloud. Modify
+	autoFQDN := true
+	if lib.GetL4FqdnFormat() == 3 {
+		autoFQDN = false
+	}
+	annotations := svcObj.GetAnnotations()
+	extDNS, ok := annotations[lib.ExternalDNSAnnotation]
+	if ok {
+		autoFQDN = false
+		fqdns = append(fqdns, extDNS)
+	}
 	vsName := lib.GetL4VSName(svcObj.ObjectMeta.Name, svcObj.ObjectMeta.Namespace)
-	// Generate the FQDN based on the logic: <svc_name>.<namespace>.<sub-domain>
 	subDomains := GetDefaultSubDomain()
-
-	if subDomains != nil {
+	if subDomains != nil && autoFQDN {
 		var fqdn string
 		// honour defaultSubDomain from values.yaml if specified
 		defaultSubDomain := lib.GetDomain()
@@ -56,11 +55,18 @@ func (o *AviObjectGraph) ConstructAviL4VsNode(svcObj *corev1.Service, key string
 
 		// subDomains[0] would either have the defaultSubDomain value
 		// or would default to the first dns subdomain it gets from the dns profile
+		subdomain := subDomains[0]
 		if strings.HasPrefix(subDomains[0], ".") {
-			fqdn = svcObj.ObjectMeta.Name + "." + svcObj.ObjectMeta.Namespace + subDomains[0]
-		} else {
-			fqdn = svcObj.ObjectMeta.Name + "." + svcObj.ObjectMeta.Namespace + "." + subDomains[0]
+			subdomain = strings.Replace(subDomains[0], ".", "", -1)
 		}
+		if lib.GetL4FqdnFormat() == 1 {
+			// Generate the FQDN based on the logic: <svc_name>.<namespace>.<sub-domain>
+			fqdn = svcObj.Name + "." + svcObj.ObjectMeta.Namespace + "." + subdomain
+		} else if lib.GetL4FqdnFormat() == 2 {
+			// Generate the FQDN based on the logic: <svc_name>-<namespace>.<sub-domain>
+			fqdn = svcObj.Name + "-" + svcObj.ObjectMeta.Namespace + "." + subdomain
+		}
+
 		fqdns = append(fqdns, fqdn)
 	}
 	avi_vs_meta = &AviVsNode{
@@ -73,7 +79,7 @@ func (o *AviObjectGraph) ConstructAviL4VsNode(svcObj *corev1.Service, key string
 		},
 	}
 
-	if lib.GetSEGName() != lib.DEFAULT_GROUP {
+	if lib.GetSEGName() != lib.DEFAULT_SE_GROUP {
 		avi_vs_meta.ServiceEngineGroup = lib.GetSEGName()
 	}
 	vrfcontext := lib.GetVrf()
@@ -123,12 +129,17 @@ func (o *AviObjectGraph) ConstructAviL4PolPoolNodes(svcObj *corev1.Service, vsNo
 		poolNode := &AviPoolNode{Name: lib.GetL4PoolName(vsNode.Name, filterPort), Tenant: lib.GetTenant(), Protocol: portProto.Protocol, PortName: portProto.Name}
 		poolNode.VrfContext = lib.GetVrf()
 
-		if !lib.IsNodePortMode() {
-			if servers := PopulateServers(poolNode, svcObj.ObjectMeta.Namespace, svcObj.ObjectMeta.Name, false, key); servers != nil {
+		serviceType := lib.GetServiceType()
+		if serviceType == lib.NodePortLocal {
+			if servers := PopulateServersForNPL(poolNode, svcObj.ObjectMeta.Namespace, svcObj.ObjectMeta.Name, false, key); servers != nil {
+				poolNode.Servers = servers
+			}
+		} else if serviceType == lib.NodePort {
+			if servers := PopulateServersForNodePort(poolNode, svcObj.ObjectMeta.Namespace, svcObj.ObjectMeta.Name, false, key); servers != nil {
 				poolNode.Servers = servers
 			}
 		} else {
-			if servers := PopulateServersForNodePort(poolNode, svcObj.ObjectMeta.Namespace, svcObj.ObjectMeta.Name, false, key); servers != nil {
+			if servers := PopulateServers(poolNode, svcObj.ObjectMeta.Namespace, svcObj.ObjectMeta.Name, false, key); servers != nil {
 				poolNode.Servers = servers
 			}
 		}
@@ -151,6 +162,59 @@ func (o *AviObjectGraph) ConstructAviL4PolPoolNodes(svcObj *corev1.Service, vsNo
 	vsNode.L4PolicyRefs = l4Policies
 	utils.AviLog.Infof("key: %s, msg: evaluated L4 pool policies :%v", key, utils.Stringify(vsNode.L4PolicyRefs))
 
+}
+
+func PopulateServersForNPL(poolNode *AviPoolNode, ns string, serviceName string, ingress bool, key string) []AviPoolMetaServer {
+	if ingress {
+		found, _ := objects.SharedClusterIpLister().Get(ns + "/" + serviceName)
+		if !found {
+			utils.AviLog.Warnf("key: %s, msg: service pointed by the ingress object is not found in ClusterIP store", key)
+			return nil
+		}
+	}
+	pods := lib.GetPodsFromService(ns, serviceName)
+
+	var poolMeta []AviPoolMetaServer
+	svcObj, err := utils.GetInformers().ServiceInformer.Lister().Services(ns).Get(serviceName)
+	if err != nil {
+		utils.AviLog.Warnf("key: %s, msg: error in obtaining the object for service: %s", key, serviceName)
+		return poolMeta
+	}
+
+	targetPorts := make(map[int]bool)
+	for _, port := range svcObj.Spec.Ports {
+		if port.Name != poolNode.PortName && len(svcObj.Spec.Ports) != 1 {
+			// continue only if port name does not match and it is multiport svcobj
+			continue
+		}
+		targetPorts[port.TargetPort.IntValue()] = true
+	}
+
+	for _, pod := range pods {
+		var annotations []lib.NPLAnnotation
+		found, obj := objects.SharedNPLLister().Get(ns + "/" + pod.Name)
+		if !found {
+			continue
+		}
+		annotations = obj.([]lib.NPLAnnotation)
+		for _, a := range annotations {
+			var atype string
+			if utils.IsV4(a.NodeIP) {
+				atype = "V4"
+			} else {
+				atype = "V6"
+			}
+			server := AviPoolMetaServer{
+				Port: int32(a.NodePort),
+				Ip: models.IPAddr{
+					Addr: &a.NodeIP,
+					Type: &atype,
+				}}
+			poolMeta = append(poolMeta, server)
+		}
+	}
+	utils.AviLog.Infof("key: %s, msg: servers for port: %v, are: %v", key, poolNode.Port, utils.Stringify(poolMeta))
+	return poolMeta
 }
 
 func PopulateServersForNodePort(poolNode *AviPoolNode, ns string, serviceName string, ingress bool, key string) []AviPoolMetaServer {

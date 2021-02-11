@@ -49,7 +49,7 @@ func UpdateIngressStatus(options []UpdateStatusOptions, bulk bool) {
 	for _, option := range updateIngressOptions {
 		if ingress := ingressMap[option.IngSvc]; ingress != nil {
 			if err = updateObject(ingress, option); err != nil {
-				utils.AviLog.Error(err)
+				utils.AviLog.Error("key: %s, msg: updating Ingress object failed: %v", option.Key, err)
 			}
 		}
 	}
@@ -65,8 +65,8 @@ func updateObject(mIngress *networkingv1beta1.Ingress, updateOption UpdateStatus
 	retry := 0
 	if len(retryNum) > 0 {
 		retry = retryNum[0]
-		if retry >= 2 {
-			return errors.New("key: %s, msg: UpdateIngressStatus retried 3 times, aborting")
+		if retry >= 3 {
+			return errors.New("UpdateIngressStatus retried 3 times, aborting")
 		}
 	}
 
@@ -136,7 +136,8 @@ func DeleteIngressStatus(svc_mdata_obj avicache.ServiceMetadataObj, isVSDelete b
 		for _, ingressns := range svc_mdata_obj.NamespaceIngressName {
 			ingressArr := strings.Split(ingressns, "/")
 			if len(ingressArr) != 2 {
-				return errors.New("key: %s, msg: DeleteIngressStatus IngressNamespace format not correct")
+				utils.AviLog.Errorf("key: %s, msg: DeleteIngressStatus IngressNamespace format not correct", key)
+				return errors.New("DeleteIngressStatus IngressNamespace format not correct")
 			}
 			svc_mdata_obj.Namespace = ingressArr[0]
 			svc_mdata_obj.IngressName = ingressArr[1]
@@ -147,9 +148,10 @@ func DeleteIngressStatus(svc_mdata_obj avicache.ServiceMetadataObj, isVSDelete b
 	}
 
 	if err != nil {
-		utils.AviLog.Warn(err)
+		return err
 	}
-	return err
+
+	return nil
 }
 
 func deleteObject(svc_mdata_obj avicache.ServiceMetadataObj, key string, isVSDelete bool, retryNum ...int) error {
@@ -157,8 +159,9 @@ func deleteObject(svc_mdata_obj avicache.ServiceMetadataObj, key string, isVSDel
 	if len(retryNum) > 0 {
 		utils.AviLog.Infof("key: %s, msg: Retrying to update the ingress status", key)
 		retry = retryNum[0]
-		if retry >= 2 {
-			return errors.New("key: %s, msg: DeleteIngressStatus retried 3 times, aborting")
+		if retry >= 3 {
+			utils.AviLog.Errorf("key: %s, msg: DeleteIngressStatus retried 3 times, aborting", key)
+			return errors.New("DeleteIngressStatus retried 3 times, aborting")
 		}
 	}
 
@@ -179,7 +182,7 @@ func deleteObject(svc_mdata_obj avicache.ServiceMetadataObj, key string, isVSDel
 		for _, host := range svc_mdata_obj.HostNames {
 			if status.Hostname == host {
 				// Check if this host is still present in the spec, if so - don't delete it
-				//NS migration case: if false -> ns invalid event happend so remove status
+				//NS migration case: if false -> ns invalid event happened so remove status
 				nsMigrationFilterFlag := utils.CheckIfNamespaceAccepted(svc_mdata_obj.Namespace, utils.GetGlobalNSFilter(), nil, true)
 				if !utils.HasElem(hostListIng, host) || isVSDelete || !nsMigrationFilterFlag {
 					mIngress.Status.LoadBalancer.Ingress = append(mIngress.Status.LoadBalancer.Ingress[:i], mIngress.Status.LoadBalancer.Ingress[i+1:]...)
@@ -241,10 +244,10 @@ func getIngresses(ingressNSNames []string, bulk bool, retryNum ...int) map[strin
 	mClient := utils.GetInformers().ClientSet
 	ingressMap := make(map[string]*networkingv1beta1.Ingress)
 	if len(retryNum) > 0 {
-		utils.AviLog.Infof("msg: Retrying to get the ingress for status update")
+		utils.AviLog.Infof("Retrying to get the ingress for status update")
 		retry = retryNum[0]
-		if retry >= 2 {
-			utils.AviLog.Errorf("msg: getIngresses for status update retried 3 times, aborting")
+		if retry >= 3 {
+			utils.AviLog.Errorf("getIngresses for status update retried 3 times, aborting")
 			return ingressMap
 		}
 	}
@@ -252,7 +255,7 @@ func getIngresses(ingressNSNames []string, bulk bool, retryNum ...int) map[strin
 	if bulk {
 		ingressList, err := mClient.NetworkingV1beta1().Ingresses("").List(context.TODO(), metav1.ListOptions{})
 		if err != nil {
-			utils.AviLog.Warnf("Could not get the ingress object for UpdateStatus: %s", err)
+			utils.AviLog.Warnf("Could not get the ingress object for UpdateStatus: %v", err)
 			// retry get if request timeout
 			if strings.Contains(err.Error(), utils.K8S_ETIMEDOUT) {
 				return getIngresses(ingressNSNames, bulk, retry+1)
@@ -271,7 +274,7 @@ func getIngresses(ingressNSNames []string, bulk bool, retryNum ...int) map[strin
 
 		mIngress, err := mClient.NetworkingV1beta1().Ingresses(nsNameSplit[0]).Get(context.TODO(), nsNameSplit[1], metav1.GetOptions{})
 		if err != nil {
-			utils.AviLog.Warnf("msg: Could not get the ingress object for UpdateStatus: %s", err)
+			utils.AviLog.Warnf("Could not get the ingress object for UpdateStatus: %v", err)
 			// retry get if request timeout
 			if strings.Contains(err.Error(), utils.K8S_ETIMEDOUT) {
 				return getIngresses(ingressNSNames, bulk, retry+1)

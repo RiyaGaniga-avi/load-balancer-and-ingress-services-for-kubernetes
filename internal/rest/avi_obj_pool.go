@@ -110,9 +110,12 @@ func (rest *RestOperations) AviPoolBuild(pool_meta *nodes.AviPoolNode, cache_obj
 		}
 	}
 
-	for _, server := range pool_meta.Servers {
-		sip := server.Ip
+	for i, server := range pool_meta.Servers {
 		port := pool_meta.Port
+		sip := server.Ip
+		if server.Port != 0 {
+			port = pool_meta.Servers[i].Port
+		}
 		s := avimodels.Server{IP: &sip, Port: &port}
 		if server.ServerNode != "" {
 			sn := server.ServerNode
@@ -175,7 +178,7 @@ func (rest *RestOperations) AviPoolDel(uuid string, tenant string, key string) *
 
 func (rest *RestOperations) AviPoolCacheAdd(rest_op *utils.RestOp, vsKey avicache.NamespaceName, key string) error {
 	if (rest_op.Err != nil) || (rest_op.Response == nil) {
-		utils.AviLog.Warnf("key: %s, rest_op has err or no reponse for POOL, err: %s, response: %s", key, rest_op.Err, rest_op.Response)
+		utils.AviLog.Warnf("key: %s, rest_op has err or no response for POOL, err: %s, response: %s", key, rest_op.Err, rest_op.Response)
 		return errors.New("Errored rest_op")
 	}
 

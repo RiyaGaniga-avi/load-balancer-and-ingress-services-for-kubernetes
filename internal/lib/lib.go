@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver"
+
 	"github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/pkg/api"
 	"github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/pkg/utils"
 
@@ -44,6 +45,11 @@ var shardSizeMap = map[string]uint32{
 	"LARGE":  8,
 	"MEDIUM": 4,
 	"SMALL":  1,
+}
+
+var fqdnEnum = map[string]int32{
+	"default": 1,
+	"flat":    2,
 }
 
 var NamePrefix string
@@ -85,6 +91,17 @@ func GetshardSize() uint32 {
 		return shardSize
 	} else {
 		return 1
+	}
+}
+
+func GetL4FqdnFormat() int32 {
+	fqdnFormat := os.Getenv("AUTO_L4_FQDN")
+	enumVal, ok := fqdnEnum[fqdnFormat]
+	if ok {
+		return enumVal
+	} else {
+		// If no match then disable FQDNs for L4.
+		return 3
 	}
 }
 
@@ -323,9 +340,9 @@ func GetSEGName() string {
 		return segName
 	}
 	if GetAdvancedL4() {
-		return DefaultSEGroup
+		return DEFAULT_SE_GROUP
 	}
-	return ""
+	return DEFAULT_SE_GROUP
 }
 
 func GetNodeNetworkMap() (map[string][]string, error) {
@@ -372,6 +389,14 @@ func GetAdvancedL4() bool {
 	advanceL4 := os.Getenv(ADVANCED_L4)
 	if advanceL4 == "true" {
 
+		return true
+	}
+	return false
+}
+
+// If this flag is set to true, then AKO uses services API. Currently the support is limited for layer 4 Virtualservices
+func UseServicesAPI() bool {
+	if ok, _ := strconv.ParseBool(os.Getenv(SERVICES_API)); ok {
 		return true
 	}
 	return false
@@ -479,7 +504,13 @@ func InformersToRegister(oclient *oshiftclient.Clientset, kclient *kubernetes.Cl
 		utils.EndpointInformer,
 		utils.SecretInformer,
 		utils.ConfigMapInformer,
+		utils.PodInformer,
 	}
+
+	if GetServiceType() == NodePortLocal {
+		allInformers = append(allInformers, utils.PodInformer)
+	}
+
 	if !GetAdvancedL4() {
 		allInformers = append(allInformers, utils.NSInformer)
 		allInformers = append(allInformers, utils.NodeInformer)
@@ -517,6 +548,10 @@ func IsNodePortMode() bool {
 		return true
 	}
 	return false
+}
+
+func GetServiceType() string {
+	return os.Getenv(SERVICE_TYPE)
 }
 
 func GetNodePortsSelector() map[string]string {

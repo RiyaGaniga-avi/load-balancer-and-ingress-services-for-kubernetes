@@ -48,14 +48,15 @@ import (
 
 // constants to be used for creating K8s objs and verifying Avi objs
 const (
-	SINGLEPORTSVC   = "testsvc"                            // single port service name
-	MULTIPORTSVC    = "testsvcmulti"                       // multi port service name
-	NAMESPACE       = "red-ns"                             // namespace
-	AVINAMESPACE    = "admin"                              // avi namespace
-	AKOTENANT       = "akotenant"                          // ako tenant where TENANTS_PER_CLUSTER is enabled
-	SINGLEPORTMODEL = "admin/cluster--red-ns-testsvc"      // single port model name
-	MULTIPORTMODEL  = "admin/cluster--red-ns-testsvcmulti" // multi port model name
-	RANDOMUUID      = "random-uuid"                        // random avi object uuid
+	SINGLEPORTSVC       = "testsvc"                            // single port service name
+	MULTIPORTSVC        = "testsvcmulti"                       // multi port service name
+	NAMESPACE           = "red-ns"                             // namespace
+	AVINAMESPACE        = "admin"                              // avi namespace
+	AKOTENANT           = "akotenant"                          // ako tenant where TENANTS_PER_CLUSTER is enabled
+	SINGLEPORTMODEL     = "admin/cluster--red-ns-testsvc"      // single port model name
+	MULTIPORTMODEL      = "admin/cluster--red-ns-testsvcmulti" // multi port model name
+	RANDOMUUID          = "random-uuid"                        // random avi object uuid
+	defaultIngressClass = "avi-lb"
 )
 
 var KubeClient *k8sfake.Clientset
@@ -77,17 +78,21 @@ func AddConfigMap() {
 func AddDefaultIngressClass() {
 	aviIngressClass := &networking.IngressClass{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "avi-lb",
+			Name: defaultIngressClass,
 			Annotations: map[string]string{
 				lib.DefaultIngressClassAnnotation: "true",
 			},
 		},
 		Spec: networking.IngressClassSpec{
-			Controller: "ako.vmware.com/avi-lb",
+			Controller: lib.AviIngressController,
 		},
 	}
 
 	KubeClient.NetworkingV1beta1().IngressClasses().Create(context.TODO(), aviIngressClass, metav1.CreateOptions{})
+}
+
+func RemoveDefaultIngressClass() {
+	KubeClient.NetworkingV1beta1().IngressClasses().Delete(context.TODO(), defaultIngressClass, metav1.DeleteOptions{})
 }
 
 //Fake Namespace
@@ -115,7 +120,7 @@ func AddNamespace(nsName string, labels map[string]string) error {
 	if err != nil {
 		_, err = KubeClient.CoreV1().Namespaces().Create(context.TODO(), nsMetaOptions, metav1.CreateOptions{})
 		if err != nil {
-			utils.AviLog.Errorf("Error occured while Adding namespace : %v", err)
+			utils.AviLog.Errorf("Error occurred while Adding namespace : %v", err)
 		}
 	}
 	return err
@@ -175,6 +180,7 @@ type FakeIngress struct {
 	HostNames    []string
 	Namespace    string
 	Name         string
+	ClassName    string
 	annotations  map[string]string
 	ServiceName  string
 	TlsSecretDNS map[string][]string
@@ -206,7 +212,7 @@ func (ing FakeIngress) Ingress(multiport ...bool) *networking.Ingress {
 				Host: dnsName,
 				IngressRuleValue: networking.IngressRuleValue{
 					HTTP: &networking.HTTPIngressRuleValue{
-						Paths: []networking.HTTPIngressPath{networking.HTTPIngressPath{
+						Paths: []networking.HTTPIngressPath{{
 							Path: "/foo",
 							Backend: networking.IngressBackend{ServiceName: ing.ServiceName, ServicePort: intstr.IntOrString{
 								Type:   intstr.String,
@@ -220,7 +226,7 @@ func (ing FakeIngress) Ingress(multiport ...bool) *networking.Ingress {
 				Host: dnsName,
 				IngressRuleValue: networking.IngressRuleValue{
 					HTTP: &networking.HTTPIngressRuleValue{
-						Paths: []networking.HTTPIngressPath{networking.HTTPIngressPath{
+						Paths: []networking.HTTPIngressPath{{
 							Path: "/bar",
 							Backend: networking.IngressBackend{ServiceName: ing.ServiceName, ServicePort: intstr.IntOrString{
 								Type:   intstr.String,
@@ -235,7 +241,7 @@ func (ing FakeIngress) Ingress(multiport ...bool) *networking.Ingress {
 				Host: dnsName,
 				IngressRuleValue: networking.IngressRuleValue{
 					HTTP: &networking.HTTPIngressRuleValue{
-						Paths: []networking.HTTPIngressPath{networking.HTTPIngressPath{
+						Paths: []networking.HTTPIngressPath{{
 							Path: path,
 							Backend: networking.IngressBackend{ServiceName: ing.ServiceName, ServicePort: intstr.IntOrString{
 								Type:   intstr.Int,
@@ -253,7 +259,7 @@ func (ing FakeIngress) Ingress(multiport ...bool) *networking.Ingress {
 			SecretName: secret,
 		})
 	}
-	for i, _ := range ing.Ips {
+	for i := range ing.Ips {
 		hostname := ""
 		if len(ing.HostNames) >= i+1 {
 			hostname = ing.HostNames[i]
@@ -262,6 +268,9 @@ func (ing FakeIngress) Ingress(multiport ...bool) *networking.Ingress {
 			IP:       ing.Ips[i],
 			Hostname: hostname,
 		})
+	}
+	if ing.ClassName != "" {
+		ingress.Spec.IngressClassName = &ing.ClassName
 	}
 	return ingress
 }
@@ -291,7 +300,7 @@ func (ing FakeIngress) SecureIngress() *networking.Ingress {
 			Host: dnsName,
 			IngressRuleValue: networking.IngressRuleValue{
 				HTTP: &networking.HTTPIngressRuleValue{
-					Paths: []networking.HTTPIngressPath{networking.HTTPIngressPath{
+					Paths: []networking.HTTPIngressPath{{
 						Path: path,
 						Backend: networking.IngressBackend{ServiceName: ing.ServiceName, ServicePort: intstr.IntOrString{
 							Type:   intstr.Int,
@@ -312,6 +321,9 @@ func (ing FakeIngress) SecureIngress() *networking.Ingress {
 		ingress.Status.LoadBalancer.Ingress = append(ingress.Status.LoadBalancer.Ingress, corev1.LoadBalancerIngress{
 			Hostname: hostName,
 		})
+	}
+	if ing.ClassName != "" {
+		ingress.Spec.IngressClassName = &ing.ClassName
 	}
 	return ingress
 }
@@ -336,7 +348,7 @@ func (ing FakeIngress) IngressNoHost() *networking.Ingress {
 		ingress.Spec.Rules = append(ingress.Spec.Rules, networking.IngressRule{
 			IngressRuleValue: networking.IngressRuleValue{
 				HTTP: &networking.HTTPIngressRuleValue{
-					Paths: []networking.HTTPIngressPath{networking.HTTPIngressPath{
+					Paths: []networking.HTTPIngressPath{{
 						Path: path,
 						Backend: networking.IngressBackend{ServiceName: ing.ServiceName, ServicePort: intstr.IntOrString{
 							Type:   intstr.Int,
@@ -357,6 +369,9 @@ func (ing FakeIngress) IngressNoHost() *networking.Ingress {
 			Hostname: hostName,
 		})
 	}
+	if ing.ClassName != "" {
+		ingress.Spec.IngressClassName = &ing.ClassName
+	}
 	return ingress
 }
 
@@ -376,6 +391,9 @@ func (ing FakeIngress) IngressOnlyHostNoBackend() *networking.Ingress {
 			HTTP: nil,
 		},
 	})
+	if ing.ClassName != "" {
+		ingress.Spec.IngressClassName = &ing.ClassName
+	}
 
 	return ingress
 }
@@ -395,6 +413,9 @@ func (ing FakeIngress) IngressMultiPath() *networking.Ingress {
 				Ingress: []corev1.LoadBalancerIngress{},
 			},
 		},
+	}
+	if ing.ClassName != "" {
+		ingress.Spec.IngressClassName = &ing.ClassName
 	}
 	for _, dnsName := range ing.DnsNames {
 		var ingrPaths []networking.HTTPIngressPath
@@ -492,7 +513,6 @@ type FakeService struct {
 	Labels         map[string]string
 	Type           corev1.ServiceType
 	LoadBalancerIP string
-	annotations    map[string]string
 	ServicePorts   []Serviceport
 }
 

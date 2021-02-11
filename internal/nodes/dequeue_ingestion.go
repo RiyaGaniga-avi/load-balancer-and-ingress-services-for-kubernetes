@@ -15,6 +15,7 @@
 package nodes
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/vmware/load-balancer-and-ingress-services-for-kubernetes/pkg/utils"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 func DequeueIngestion(key string, fullsync bool) {
@@ -30,10 +32,14 @@ func DequeueIngestion(key string, fullsync bool) {
 	// The assumption is that an update either affects an LB service type or an ingress. It cannot be both.
 	var ingressFound, routeFound bool
 	var ingressNames, routeNames []string
-	utils.AviLog.Debugf("key: %s, msg: starting graph Sync", key)
+	utils.AviLog.Infof("key: %s, msg: starting graph Sync", key)
 	sharedQueue := utils.SharedWorkQueue().GetQueueByName(utils.GraphLayer)
 
 	objType, namespace, name := extractTypeNameNamespace(key)
+	if objType == utils.Pod {
+		handlePod(key, namespace, name)
+	}
+
 	schema, valid := ConfigDescriptor().GetByType(objType)
 	if valid {
 		// If it's an ingress related change, let's process that.
@@ -92,7 +98,7 @@ func DequeueIngestion(key string, fullsync bool) {
 		handleRoute(key, fullsync, routeNames)
 	}
 
-	if !ingressFound && !lib.GetAdvancedL4() {
+	if !ingressFound && (!lib.GetAdvancedL4() && !lib.UseServicesAPI()) {
 		// If ingress is not found, let's do the other checks.
 		if objType == utils.L4LBService {
 			// L4 type of services need special handling. We create a dedicated VS in Avi for these.
@@ -120,9 +126,10 @@ func DequeueIngestion(key string, fullsync bool) {
 	}
 
 	// handle the services APIs
-	if lib.GetAdvancedL4() {
+	if lib.GetAdvancedL4() || lib.UseServicesAPI() &&
+		(objType == utils.L4LBService || objType == lib.Gateway || objType == lib.GatewayClass || objType == utils.Endpoints || objType == lib.NsxAlbInfraSetting) {
 		if !valid && objType == utils.L4LBService {
-			schema, valid = ConfigDescriptor().GetByType(utils.Service)
+			schema, _ = ConfigDescriptor().GetByType(utils.Service)
 		}
 		gateways, gatewayFound := schema.GetParentGateways(name, namespace, key)
 		// For each gateway first verify if it has a valid subscription to the GatewayClass or not.
@@ -153,26 +160,72 @@ func DequeueIngestion(key string, fullsync bool) {
 	}
 }
 
+// handlePod populates NPL annotations for a pod in store.
+// It also stores a mapping of Pod to Services for future use
+func handlePod(key, namespace, podName string) {
+	podKey := namespace + "/" + podName
+	pod, err := utils.GetInformers().PodInformer.Lister().Pods(namespace).Get(podName)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			objects.SharedNPLLister().Delete(podKey)
+		}
+		utils.AviLog.Infof("key: %s, got error while getting pod: %v", err)
+		return
+	}
+	ann := pod.GetAnnotations()
+	var annotations []lib.NPLAnnotation
+	if val, ok := ann[lib.NPLPodAnnotation]; ok {
+		if err := json.Unmarshal([]byte(val), &annotations); err != nil {
+			utils.AviLog.Infof("key: %s, got error while unmarshaling NPL annotations: %v", err)
+		}
+		objects.SharedNPLLister().Save(podKey, annotations)
+		services := lib.GetServicesForPod(pod)
+		objects.SharedPodToSvcLister().Save(podKey, services)
+		utils.AviLog.Infof("key: %s, msg: NPL Services retrieved: %s", key, services)
+	} else {
+		utils.AviLog.Info("key: %s, NPL annotation not found for Pod")
+		objects.SharedNPLLister().Delete(podKey)
+	}
+}
+
 func isGatewayDelete(gatewayKey string, key string) bool {
 	// parse the gateway name and namespace
 	namespace, _, gwName := extractTypeNameNamespace(gatewayKey)
-	gateway, err := lib.GetAdvL4Informers().GatewayInformer.Lister().Gateways(namespace).Get(gwName)
-	if err != nil && errors.IsNotFound(err) {
-		return true
-	}
+	if lib.GetAdvancedL4() {
+		gateway, err := lib.GetAdvL4Informers().GatewayInformer.Lister().Gateways(namespace).Get(gwName)
+		if err != nil && errors.IsNotFound(err) {
+			return true
+		}
 
-	// check if deletiontimesttamp is present to see intended delete
-	if gateway.GetDeletionTimestamp() != nil {
-		utils.AviLog.Infof("key: %s, deletionTimestamp set on gateway, will be deleting VS", key)
-		return true
-	}
+		// check if deletiontimesttamp is present to see intended delete
+		if gateway.GetDeletionTimestamp() != nil {
+			utils.AviLog.Infof("key: %s, deletionTimestamp set on gateway, will be deleting VS", key)
+			return true
+		}
 
-	// Check if the gateway has a valid gateway class
-	err = validateGatewayForClass(key, gateway)
-	if err != nil {
-		return true
-	}
+		// Check if the gateway has a valid gateway class
+		err = validateGatewayForClass(key, gateway)
+		if err != nil {
+			return true
+		}
+	} else if lib.UseServicesAPI() {
+		gateway, err := lib.GetSvcAPIInformers().GatewayInformer.Lister().Gateways(namespace).Get(gwName)
+		if err != nil && errors.IsNotFound(err) {
+			return true
+		}
 
+		// check if deletiontimesttamp is present to see intended delete
+		if gateway.GetDeletionTimestamp() != nil {
+			utils.AviLog.Infof("key: %s, deletionTimestamp set on gateway, will be deleting VS", key)
+			return true
+		}
+
+		// Check if the gateway has a valid gateway class
+		err = validateSvcApiGatewayForClass(key, gateway)
+		if err != nil {
+			return true
+		}
+	}
 	found, _ := objects.ServiceGWLister().GetGWListeners(namespace + "/" + gwName)
 	if !found {
 		return true
@@ -240,14 +293,14 @@ func handleIngress(key string, fullsync bool, ingressNames []string) {
 	objType, namespace, _ := extractTypeNameNamespace(key)
 	sharedQueue := utils.SharedWorkQueue().GetQueueByName(utils.GraphLayer)
 	if lib.GetShardScheme() == lib.NAMESPACE_SHARD_SCHEME {
-		shardVsName := DeriveNamespacedShardVS(namespace, key)
-		if shardVsName == "" {
-			// If we aren't able to derive the ShardVS name, we should return
-			return
-		}
-		model_name := lib.GetModelName(lib.GetTenant(), shardVsName)
 		for _, ingress := range ingressNames {
 			nsing, nameing := getIngressNSNameForIngestion(objType, namespace, ingress)
+			shardVsName := DeriveNamespacedShardVS(nsing, key)
+			if shardVsName == "" {
+				// If we aren't able to derive the ShardVS name, we should return
+				return
+			}
+			model_name := lib.GetModelName(lib.GetTenant(), shardVsName)
 			// The assumption is that the ingress names are from the same namespace as the service/ep updates. Kubernetes
 			// does not allow cross tenant ingress references.
 			utils.AviLog.Debugf("key: %s, msg: evaluating ingress: %s", key, ingress)

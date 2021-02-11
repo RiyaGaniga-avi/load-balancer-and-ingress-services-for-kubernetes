@@ -30,6 +30,7 @@ import (
 	avimodels "github.com/avinetworks/sdk/go/models"
 	"github.com/davecgh/go-spew/spew"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const VSVIP_NOTFOUND = "VsVip object not found"
@@ -59,7 +60,7 @@ func (rest *RestOperations) AviVsBuild(vs_meta *nodes.AviVsNode, rest_method uti
 		svc_mdata_json, _ := json.Marshal(&vs_meta.ServiceMetadata)
 		svc_mdata := string(svc_mdata_json)
 		vrfContextRef := "/api/vrfcontext?name=" + vs_meta.VrfContext
-		seGroupRef := "/api/serviceenginegroup?name=" + lib.GetSEGName()
+		seGroupRef := "/api/serviceenginegroup?name=" + vs_meta.ServiceEngineGroup
 		enableRHI := lib.GetEnableRHI() // We don't impact the checksum of the VS since it's a global setting in AKO.
 		vs := avimodels.VirtualService{
 			Name:                  &name,
@@ -71,7 +72,10 @@ func (rest *RestOperations) AviVsBuild(vs_meta *nodes.AviVsNode, rest_method uti
 			ServiceMetadata:       &svc_mdata,
 			SeGroupRef:            &seGroupRef,
 			VrfContextRef:         &vrfContextRef,
-			EnableRhi:             &enableRHI,
+		}
+		if enableRHI {
+			// If the value is set to false, we would simply remove it from the payload, which should default it to false.
+			vs.EnableRhi = &enableRHI
 		}
 		if lib.GetAdvancedL4() {
 			ignPool := true
@@ -409,15 +413,22 @@ func (rest *RestOperations) AviVsCacheAdd(rest_op *utils.RestOp, key string) err
 				} else {
 					vs_cache_obj.InvalidData = false
 				}
-
 				utils.AviLog.Debug(spew.Sprintf("key: %s, msg: updated VS cache key %v val %v\n", key, k,
 					utils.Stringify(vs_cache_obj)))
 				if svc_mdata_obj.Gateway != "" {
-					status.UpdateGatewayStatusAddress([]status.UpdateStatusOptions{{
-						Vip:             vs_cache_obj.Vip,
-						ServiceMetadata: svc_mdata_obj,
-						Key:             key,
-					}}, false)
+					if lib.UseServicesAPI() {
+						status.UpdateSvcApiGatewayStatusAddress([]status.UpdateStatusOptions{{
+							Vip:             vs_cache_obj.Vip,
+							ServiceMetadata: svc_mdata_obj,
+							Key:             key,
+						}}, false)
+					} else {
+						status.UpdateGatewayStatusAddress([]status.UpdateStatusOptions{{
+							Vip:             vs_cache_obj.Vip,
+							ServiceMetadata: svc_mdata_obj,
+							Key:             key,
+						}}, false)
+					}
 				} else if len(svc_mdata_obj.NamespaceServiceName) > 0 {
 					// This service needs an update of the status
 					status.UpdateL4LBStatus([]status.UpdateStatusOptions{{
@@ -490,8 +501,7 @@ func (rest *RestOperations) AviVsCacheAdd(rest_op *utils.RestOp, key string) err
 				}}, false)
 			}
 			rest.cache.VsCacheMeta.AviCacheAdd(k, &vs_cache_obj)
-			utils.AviLog.Info(spew.Sprintf("key: %s, msg: added VS cache key %v val %v\n", key, k,
-				vs_cache_obj))
+			utils.AviLog.Infof("key: %s, msg: added VS cache key %v val %v\n", key, k, utils.Stringify(&vs_cache_obj))
 		}
 
 	}
@@ -851,7 +861,7 @@ func (rest *RestOperations) AviVsVipDel(uuid string, tenant string, key string) 
 func (rest *RestOperations) AviVsVipCacheAdd(rest_op *utils.RestOp, vsKey avicache.NamespaceName, key string) error {
 	if (rest_op.Err != nil) || (rest_op.Response == nil) {
 		if rest_op.Message == "" {
-			utils.AviLog.Warnf("key: %s, rest_op has err or no reponse for vsvip err: %s, response: %s", key, rest_op.Err, rest_op.Response)
+			utils.AviLog.Warnf("key: %s, rest_op has err or no response for vsvip err: %s, response: %s", key, rest_op.Err, rest_op.Response)
 			return errors.New("Errored vsvip rest_op")
 		}
 
@@ -860,20 +870,38 @@ func (rest *RestOperations) AviVsVipCacheAdd(rest_op *utils.RestOp, vsKey avicac
 			vs_cache_obj, found := vs_cache.(*avicache.AviVsCache)
 			if found && vs_cache_obj.ServiceMetadataObj.Gateway != "" {
 				gwNSName := strings.Split(vs_cache_obj.ServiceMetadataObj.Gateway, "/")
-				gw, err := lib.GetAdvL4Informers().GatewayInformer.Lister().Gateways(gwNSName[0]).Get(gwNSName[1])
-				if err != nil {
-					utils.AviLog.Warnf("key: %s, msg: Gateway object not found, skippig status update %v", key, err)
-					return err
-				}
+				if lib.GetAdvancedL4() {
+					gw, err := lib.GetAdvL4Informers().GatewayInformer.Lister().Gateways(gwNSName[0]).Get(gwNSName[1])
+					if err != nil {
+						utils.AviLog.Warnf("key: %s, msg: Gateway object not found, skippig status update %v", key, err)
+						return err
+					}
 
-				gwStatus := gw.Status.DeepCopy()
-				status.UpdateGatewayStatusGWCondition(gwStatus, &status.UpdateGWStatusConditionOptions{
-					Type:    "Pending",
-					Status:  corev1.ConditionTrue,
-					Reason:  "InvalidAddress",
-					Message: rest_op.Message,
-				})
-				status.UpdateGatewayStatusObject(gw, gwStatus)
+					gwStatus := gw.Status.DeepCopy()
+					status.UpdateGatewayStatusGWCondition(key, gwStatus, &status.UpdateGWStatusConditionOptions{
+						Type:    "Pending",
+						Status:  corev1.ConditionTrue,
+						Reason:  "InvalidAddress",
+						Message: rest_op.Message,
+					})
+					status.UpdateGatewayStatusObject(key, gw, gwStatus)
+
+				} else if lib.UseServicesAPI() {
+					gw, err := lib.GetSvcAPIInformers().GatewayInformer.Lister().Gateways(gwNSName[0]).Get(gwNSName[1])
+					if err != nil {
+						utils.AviLog.Warnf("key: %s, msg: Gateway object not found, skippig status update %v", key, err)
+						return err
+					}
+
+					gwStatus := gw.Status.DeepCopy()
+					status.UpdateSvcApiGatewayStatusGWCondition(key, gwStatus, &status.UpdateSvcApiGWStatusConditionOptions{
+						Type:    "Pending",
+						Status:  metav1.ConditionTrue,
+						Reason:  "InvalidAddress",
+						Message: rest_op.Message,
+					})
+					status.UpdateSvcApiGatewayStatusObject(key, gw, gwStatus)
+				}
 				utils.AviLog.Warnf("key: %s, msg: IPAddress Updates on gateway not supported, Please recreate gateway object with the new preferred IPAddress", key)
 				return errors.New(rest_op.Message)
 			}
