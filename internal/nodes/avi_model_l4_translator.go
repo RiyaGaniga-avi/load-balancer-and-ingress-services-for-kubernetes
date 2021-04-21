@@ -15,6 +15,7 @@
 package nodes
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -146,7 +147,11 @@ func (o *AviObjectGraph) ConstructAviL4PolPoolNodes(svcObj *corev1.Service, vsNo
 		poolNode.VrfContext = lib.GetVrf()
 
 		serviceType := lib.GetServiceType()
-		if serviceType == lib.NodePortLocal {
+		if lib.GetMultiNetwork() {
+			if servers := PopulateServersForMultiNetwork(poolNode, svcObj.ObjectMeta.Namespace, svcObj.ObjectMeta.Name, false, key); servers != nil {
+				poolNode.Servers = servers
+			}
+		} else if serviceType == lib.NodePortLocal {
 			if svcObj.Spec.Type == "NodePort" {
 				utils.AviLog.Warnf("key: %s, msg: Service of type NodePort is not supported when `serviceType` is NodePortLocal.", key)
 			} else {
@@ -317,6 +322,62 @@ func PopulateServersForNodePort(poolNode *AviPoolNode, ns string, serviceName st
 		}
 	}
 
+	return poolMeta
+}
+
+type PodMultiNic struct {
+	Name    string            `json:"name"`
+	Ips     []string          `json:"ips"`
+	Default bool              `json: "default"`
+	Mac     string            `json: "mac"`
+	Dns     map[string]string `json: "dns"`
+}
+
+type PodMultiNicList []PodMultiNic
+
+func PopulateServersForMultiNetwork(poolNode *AviPoolNode, ns string, serviceName string, ingress bool, key string) []AviPoolMetaServer {
+	var poolMeta []AviPoolMetaServer
+	svcObj, err := utils.GetInformers().ServiceInformer.Lister().Services(ns).Get(serviceName)
+	if err != nil {
+		utils.AviLog.Warnf("key: %s, msg: error in obtaining the object for service: %s", key, serviceName)
+		return poolMeta
+	}
+	// Populate pool servers
+	if lib.IsServiceClusterIPType(svcObj) {
+		utils.AviLog.Debugf("key: %s, msg: ClusterIP is not processed in NodePort: %s", key, serviceName)
+		return poolMeta
+	}
+	pods := lib.GetPodsFromServiceForMultiNetwork(svcObj.Namespace, serviceName)
+	if len(pods) == 0 {
+		utils.AviLog.Warnf("Service %s doesnot have any pods under it", svcObj.Name)
+		return poolMeta
+	}
+	var podAnnNicKey = "k8s.v1.cni.cncf.io/networks-status"
+	var multinicList []PodMultiNic
+	var atype string
+	for _, pod := range pods {
+		if len(pod.Annotations[podAnnNicKey]) != 0 {
+			err := json.Unmarshal([]byte(pod.Annotations[podAnnNicKey]), &multinicList)
+			if err != nil {
+				utils.AviLog.Infof("Pods %s Annotations %s arent of type PodMultiNicList", pod.Name, podAnnNicKey)
+			}
+			for _, nic := range multinicList {
+				if nic.Default {
+					continue
+				} else if len(nic.Ips) > 0 {
+					if utils.IsV4(nic.Ips[0]) {
+						atype = "V4"
+					} else {
+						atype = "V6"
+					}
+					a := avimodels.IPAddr{Type: &atype, Addr: &nic.Ips[0]}
+					server := AviPoolMetaServer{Ip: a}
+					poolMeta = append(poolMeta, server)
+				}
+			}
+		}
+	}
+	utils.AviLog.Infof("key: %s, msg: servers for port: %v, are: %v", key, poolNode.Port, utils.Stringify(poolMeta))
 	return poolMeta
 }
 

@@ -513,6 +513,14 @@ func GetDomain() string {
 	return ""
 }
 
+func GetMultiNetwork() bool {
+	multiNetwork := os.Getenv(MULTI_NETWORK)
+	if multiNetwork == "true" {
+		return true
+	}
+	return false
+}
+
 // This utility returns a true/false depending on whether
 // the user requires advanced L4 functionality
 func GetAdvancedL4() bool {

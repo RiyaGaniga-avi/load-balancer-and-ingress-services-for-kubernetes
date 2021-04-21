@@ -63,6 +63,7 @@ const (
 	NODE_PORT                                  = "NodePort"
 	NODE_KEY                                   = "NODE_KEY"
 	NODE_VALUE                                 = "NODE_VALUE"
+	MULTI_NETWORK                              = "MULTI_NETWORK"
 	ShardVSPrefix                              = "Shared-L7"
 	PassthroughPrefix                          = "Shared-Passthrough-"
 	PolicyAllow                                = "ALLOW"
