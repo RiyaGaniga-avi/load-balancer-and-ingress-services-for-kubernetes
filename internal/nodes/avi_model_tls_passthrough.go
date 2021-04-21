@@ -142,7 +142,11 @@ func (o *AviObjectGraph) BuildGraphForPassthrough(svclist []IngressHostPathSvc, 
 		}
 
 		poolNode.Servers = []AviPoolMetaServer{}
-		if !lib.IsNodePortMode() {
+		if lib.GetMultiNetwork() {
+			if servers := PopulateServersForMultiNetwork(poolNode, namesapce, obj.ServiceName, false, key); servers != nil {
+				poolNode.Servers = servers
+			}
+		} else if !lib.IsNodePortMode() {
 			if servers := PopulateServers(poolNode, namesapce, obj.ServiceName, true, key); servers != nil {
 				poolNode.Servers = servers
 			}

@@ -92,6 +92,11 @@ spec:
               configMapKeyRef:
                 name: avi-k8s-config
                 key: fullSyncFrequency
+          - name: MULTI_NETWORK
+            valueFrom:
+              configMapKeyRef:
+                name: avi-k8s-config
+                key: multiNetwork
           - name: CLOUD_NAME
             valueFrom:
               configMapKeyRef:

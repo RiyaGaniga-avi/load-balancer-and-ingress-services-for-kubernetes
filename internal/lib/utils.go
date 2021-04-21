@@ -128,6 +128,37 @@ func GetPodsFromService(namespace, serviceName string) []utils.NamespaceName {
 	return pods
 }
 
+func GetPodsFromServiceForMultiNetwork(namespace, serviceName string) []*corev1.Pod {
+	var pods []utils.NamespaceName
+	svcKey := namespace + "/" + serviceName
+	svc, err := utils.GetInformers().ServiceInformer.Lister().Services(namespace).Get(serviceName)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return nil
+		}
+		if found, podsIntf := objects.SharedSvcToPodLister().Get(svcKey); found {
+			_, ok := podsIntf.([]utils.NamespaceName)
+			if ok {
+				return nil
+			}
+		}
+		return nil
+	}
+
+	if len(svc.Spec.Selector) == 0 {
+		return nil
+	}
+
+	podList, err := utils.GetInformers().PodInformer.Lister().Pods(namespace).List(labels.SelectorFromSet(labels.Set(svc.Spec.Selector)))
+	if err != nil {
+		utils.AviLog.Warnf("Got error while listing Pods with selector %v: %v", svc.Spec.Selector, err)
+		return nil
+	}
+
+	objects.SharedSvcToPodLister().Save(svcKey, pods)
+	return podList
+}
+
 func GetServicesForPod(pod *corev1.Pod) ([]string, []string) {
 	var svcList, lbList []string
 	services, err := utils.GetInformers().ServiceInformer.Lister().List(labels.Everything())
