@@ -294,11 +294,11 @@ func CompareVirtualServiceResources(t *testing.T, eventLog models.EventLog) bool
 	var new, old models.VirtualService
 	err := json.Unmarshal([]byte(CleanResourceData(*eventLog.EventDetails.ConfigUpdateDetails.NewResourceData)), &new)
 	if err != nil {
-		t.Logf("Error unmarshalling data into VS. Error : %v", err)
+		t.Fatalf("Error unmarshalling data into VS. Error : %v", err)
 	}
 	err = json.Unmarshal([]byte(CleanResourceData(*eventLog.EventDetails.ConfigUpdateDetails.OldResourceData)), &old)
 	if err != nil {
-		t.Logf("Error unmarshalling data into VS. Error : %v", err)
+		t.Fatalf("Error unmarshalling data into VS. Error : %v", err)
 	}
 	if *new.LastModified == *old.LastModified {
 		return true
@@ -325,11 +325,11 @@ func ComparePoolResources(t *testing.T, eventLog models.EventLog) bool {
 	var new, old models.Pool
 	err := json.Unmarshal([]byte(CleanResourceData(*eventLog.EventDetails.ConfigUpdateDetails.NewResourceData)), &new)
 	if err != nil {
-		t.Logf("Error unmarshalling data into Pool. Error : %v", err)
+		t.Fatalf("Error unmarshalling data into Pool. Error : %v", err)
 	}
 	err = json.Unmarshal([]byte(CleanResourceData(*eventLog.EventDetails.ConfigUpdateDetails.OldResourceData)), &old)
 	if err != nil {
-		t.Logf("Error unmarshalling data into Pool. Error : %v", err)
+		t.Fatalf("Error unmarshalling data into Pool. Error : %v", err)
 	}
 	if *new.LastModified == *old.LastModified {
 		return true
@@ -356,11 +356,11 @@ func ComparePoolGroupResources(t *testing.T, eventLog models.EventLog) bool {
 	var new, old models.PoolGroup
 	err := json.Unmarshal([]byte(CleanResourceData(*eventLog.EventDetails.ConfigUpdateDetails.NewResourceData)), &new)
 	if err != nil {
-		t.Logf("Error unmarshalling data into PoolGroup. Error : %v", err)
+		t.Fatalf("Error unmarshalling data into PoolGroup. Error : %v", err)
 	}
 	err = json.Unmarshal([]byte(CleanResourceData(*eventLog.EventDetails.ConfigUpdateDetails.OldResourceData)), &old)
 	if err != nil {
-		t.Logf("Error unmarshalling data into PoolGroup. Error : %v", err)
+		t.Fatalf("Error unmarshalling data into PoolGroup. Error : %v", err)
 	}
 
 	if *new.LastModified == *old.LastModified {
@@ -388,11 +388,11 @@ func CompareVsVipResources(t *testing.T, eventLog models.EventLog) bool {
 	var new, old models.VsVip
 	err := json.Unmarshal([]byte(CleanResourceData(*eventLog.EventDetails.ConfigUpdateDetails.NewResourceData)), &new)
 	if err != nil {
-		t.Logf("Error unmarshalling data into VsVip. Error : %v", err)
+		t.Fatalf("Error unmarshalling data into VsVip. Error : %v", err)
 	}
 	err = json.Unmarshal([]byte(CleanResourceData(*eventLog.EventDetails.ConfigUpdateDetails.OldResourceData)), &old)
 	if err != nil {
-		t.Logf("Error unmarshalling data into VsVip. Error : %v", err)
+		t.Fatalf("Error unmarshalling data into VsVip. Error : %v", err)
 	}
 	if *new.LastModified == *old.LastModified {
 		return true
@@ -429,11 +429,11 @@ func CheckForUnwantedAPICallsToController(t *testing.T, AviClient *clients.AviCl
 		t.Errorf("Get uri %v returned err for Event log %v", uri, err)
 	}
 	elems := make([]json.RawMessage, result.Count)
-	t.Logf("Found %d config updates", result.Count)
+	t.Logf("Found %d config updates between %s and %s", result.Count, start, end)
 
 	err = json.Unmarshal(result.Results, &elems)
 	if err != nil {
-		t.Errorf("Failed to unmarshal Event log data, err: %v", err)
+		t.Fatalf("Failed to unmarshal Event log data, err: %v", err)
 	}
 	for _, elem := range elems {
 		eventLog := models.EventLog{}
